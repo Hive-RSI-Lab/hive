@@ -6,27 +6,27 @@ You talk to a lead in a chat. The lead turns what you say into briefs. Workers b
 
 ## Install
 
+Windows (PowerShell), with the GitHub CLI logged in:
+
+    gh api repos/ihsan-sa/hive-standalone-build/contents/install/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
+
 macOS / Linux:
 
-    curl -fsSL https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/install.sh | sh
+    gh api repos/ihsan-sa/hive-standalone-build/contents/install/install.sh -H "Accept: application/vnd.github.raw" | sh
 
-Windows (PowerShell):
+Then run `hive-v0`. The first run checks for git, Claude Code and the GitHub CLI, offers their own logins, asks where to live (Enter for `~/hive`) and for a GitHub repository (Enter makes a small private demo project), and opens the control center with the lead's chat.
 
-    irm https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/install.ps1 | iex
-
-Then run `hive`. It checks for git, Claude Code and the GitHub CLI, offers their own logins, asks where to live (default `~/hive`) and for a GitHub repository (blank makes a small demo project), and opens the control center with the lead's chat.
-
-On Windows, agents are sandboxed inside WSL 2 with Claude Code installed there (`hive doctor` says what's missing).
+On Windows, agents are sandboxed inside WSL 2; the installer installs or updates Claude Code there.
 
 ## Use
 
-    hive                  control center: Chats, Dashboard, Waiting, Modules, Settings
-    hive ask "..." --wait ask the lead from a shell
-    hive status           what it's doing
-    hive improve          run an improvement sweep now
-    hive doctor           check the install and sandbox
-    hive update           newest release
-    hive shutdown         stop it (agents finish their turn; `hive` starts it again)
+    hive-v0               control center: Chats, Dashboard, Waiting, Modules, Settings
+    hive-v0 ask "..." --wait ask the lead from a shell
+    hive-v0 status           what it's doing
+    hive-v0 improve          run an improvement sweep now
+    hive-v0 doctor           check the install and sandbox
+    hive-v0 update           newest release
+    hive-v0 shutdown         stop it (agents finish their turn; `hive-v0` starts it again)
 
 The Hive keeps running in the background and starts with the machine. Closing the control center never stops work.
 
@@ -41,7 +41,6 @@ See [docs/architecture.md](docs/architecture.md) and [docs/risk.md](docs/risk.md
 
 ## Uninstall
 
-    curl -fsSL https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/uninstall.sh | sh
-    irm https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/uninstall.ps1 | iex
+    gh api repos/ihsan-sa/hive-standalone-build/contents/install/uninstall.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
 
 Your folder is left alone.

@@ -80,6 +80,13 @@ func (m *Module) Create(s Spec) (core.Project, bool, error) {
 		s.Repo = user + "/" + s.Repo
 	}
 	created, err := f.EnsureRepo(s.Repo, core.Clip(s.Description, 300))
+	// The demo never adopts an existing repository: take the next free name.
+	for i := 2; s.Demo && err == nil && !created && i < 10; i++ {
+		owner := strings.SplitN(s.Repo, "/", 2)[0]
+		s.Name = fmt.Sprintf("textkit-%d", i)
+		s.Repo = owner + "/" + s.Name
+		created, err = f.EnsureRepo(s.Repo, core.Clip(s.Description, 300))
+	}
 	if err != nil {
 		return core.Project{}, false, err
 	}

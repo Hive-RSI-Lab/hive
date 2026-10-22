@@ -26,7 +26,7 @@ type Tokens struct {
 func NewTokens(ws Workspace) *Tokens { return &Tokens{ws: ws} }
 
 // ErrNoLogin means the harness is not logged in on this machine.
-var ErrNoLogin = errors.New("not logged in; run `hive login`")
+var ErrNoLogin = errors.New("Claude Code is not logged in on this machine")
 
 // AgentEnv returns environment entries carrying a short-lived credential.
 func (t *Tokens) AgentEnv(h string) ([]string, error) {
@@ -49,7 +49,7 @@ func (t *Tokens) AgentEnv(h string) ([]string, error) {
 			return nil, err
 		}
 		if time.Until(exp) <= 0 {
-			return nil, errors.New("Claude login has expired; open Claude Code once or run `hive login`")
+			return nil, errors.New("Claude login has expired; open Claude Code once to renew it")
 		}
 		return []string{"CLAUDE_CODE_OAUTH_TOKEN=" + tok}, nil
 	}

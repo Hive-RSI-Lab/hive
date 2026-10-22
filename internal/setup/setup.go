@@ -101,9 +101,9 @@ func SandboxReport(ws core.Workspace, hiveLinux string) (string, error) {
 			hint = "The installer puts hive-linux-amd64 next to hive.exe; run the install line again."
 			break
 		}
-		hint = "Agents run sandboxed inside WSL 2. Install it with `wsl --install -d Ubuntu`, then install Claude Code inside it:\n    wsl -d Ubuntu -- bash -lc \"curl -fsSL https://claude.ai/install.sh | bash\"\nand run `hive doctor` again."
+		hint = "Agents run sandboxed inside WSL 2. Install it with `wsl --install -d Ubuntu`, then install Claude Code inside it:\n    wsl -d Ubuntu -- bash -lc \"curl -fsSL https://claude.ai/install.sh | bash\"\nand run `" + core.Cmd + " doctor` again."
 	case "linux":
-		hint = "Agents run in unprivileged user namespaces. If your distribution restricts them (Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=1), allow them for the hive binary or system-wide, then run `hive doctor` again."
+		hint = "Agents run in unprivileged user namespaces. If your distribution restricts them (Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=1), allow them for the hive binary or system-wide, then run `" + core.Cmd + " doctor` again."
 	case "darwin":
 		hint = "Agents run under sandbox-exec, which ships with macOS."
 	}

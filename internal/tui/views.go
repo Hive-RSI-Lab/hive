@@ -727,7 +727,7 @@ func (m *model) keySettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				c.Sandbox = "auto"
 				return m, m.post("/api/config", c, "sandbox back to auto")
 			}
-			m.setFlash("to run agents without a sandbox, read the warning in `hive doctor --bare`")
+			m.setFlash("to run agents without a sandbox, read the warning in `" + core.Cmd + " doctor --bare`")
 			return m, nil
 		}
 		m.editing = true

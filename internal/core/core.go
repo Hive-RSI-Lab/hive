@@ -54,7 +54,7 @@ func (c *Core) Sandbox() (sandbox.Sandbox, error) {
 	cfg := c.WS.LoadConfig()
 	mode := cfg.Sandbox
 	if mode == "bare" && cfg.BareAccepted == "" {
-		return nil, errors.New("bare runs need the warning read first (Settings, or `hive doctor --bare`)")
+		return nil, errors.New("bare runs need the warning read first (`" + Cmd + " doctor --bare`)")
 	}
 	c.sbMu.Lock()
 	defer c.sbMu.Unlock()
@@ -96,7 +96,39 @@ func (c *Core) Tools() []string {
 		return []string{c.HiveLinux()}
 	}
 	exe, _ := os.Executable()
-	return []string{exe}
+	return []string{c.agentBinary(exe)}
+}
+
+// agentBinary returns a copy of exe named `hive` in .hive/bin, since agents
+// call `hive agent` whatever the person's command is called (e.g. hive-v0).
+func (c *Core) agentBinary(exe string) string {
+	name := "hive"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if filepath.Base(exe) == name {
+		return exe
+	}
+	dst := filepath.Join(c.WS.Bin(), name)
+	src, err1 := os.Stat(exe)
+	cur, err2 := os.Stat(dst)
+	if err1 == nil && (err2 != nil || cur.Size() != src.Size() || cur.ModTime().Before(src.ModTime())) {
+		if raw, err := os.ReadFile(exe); err == nil {
+			os.MkdirAll(c.WS.Bin(), 0o755)
+			tmp := dst + ".tmp-" + NewID()[14:]
+			if os.WriteFile(tmp, raw, 0o755) == nil {
+				os.Remove(dst + ".old")
+				os.Rename(dst, dst+".old") // a running copy can be renamed, not overwritten
+				if os.Rename(tmp, dst) != nil {
+					os.Remove(tmp)
+				}
+			}
+		}
+	}
+	if Exists(dst) {
+		return dst
+	}
+	return exe
 }
 
 // Tick advances runs; modules tick themselves from the daemon loop.
@@ -104,3 +136,6 @@ func (c *Core) Tick() { c.Runs.Tick() }
 
 // Close closes the journal.
 func (c *Core) Close() error { return c.J.Close() }
+
+// Cmd is the name the person runs the Hive by (hive, hive-v0, ...), for messages.
+var Cmd = "hive"

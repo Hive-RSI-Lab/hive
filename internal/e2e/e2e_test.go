@@ -177,7 +177,12 @@ func (h *hive) wait(what string, timeout time.Duration, cond func(api.State) boo
 		time.Sleep(500 * time.Millisecond)
 	}
 	raw, _ := json.MarshalIndent(st.Projects, "", " ")
-	h.t.Fatalf("timed out waiting for %s; projects: %s\nalerts: %+v", what, core.Clip(string(raw), 6000), st.Alerts)
+	var runs []string
+	for _, r := range st.Runs {
+		errOut, _ := os.ReadFile(h.ws.TurnOut(r.ID, max(r.Turn, 1)) + ".err")
+		runs = append(runs, fmt.Sprintf("%s %s turn %d: %s %s", r.Role, r.ID, r.Turn, r.Status, core.Clip(r.Reason+" "+string(errOut), 300)))
+	}
+	h.t.Fatalf("timed out waiting for %s; runs:\n%s\nprojects: %s\nalerts: %+v", what, strings.Join(runs, "\n"), core.Clip(string(raw), 4000), st.Alerts)
 	return st
 }
 

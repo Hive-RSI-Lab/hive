@@ -52,7 +52,7 @@ func (w *WSL) Isolated() bool { return true }
 func (w *WSL) Check() error {
 	w.once.Do(func() {
 		if w.HiveLinux == "" || !fileExists(w.HiveLinux) {
-			w.err = errors.New("the Linux hive binary is missing (reinstall, or run `hive doctor`)")
+			w.err = errors.New("the Linux hive binary is missing; reinstall")
 			return
 		}
 		out, err := w.run(30*time.Second, "id", "-u")

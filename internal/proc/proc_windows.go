@@ -17,19 +17,12 @@ const (
 	createBreakawayFromJob = 0x01000000
 )
 
-func detach(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewProcessGroup | createNoWindow | createBreakawayFromJob, HideWindow: true}
-}
+// detachAttempts: first try to leave the caller's job object (so a run
+// survives whatever started the daemon); some environments forbid that.
+var detachAttempts = []uint32{createNewProcessGroup | createNoWindow | createBreakawayFromJob, createNewProcessGroup | createNoWindow}
 
-func startCmd(cmd *exec.Cmd) error {
-	err := cmd.Start()
-	if err != nil && cmd.SysProcAttr != nil && cmd.SysProcAttr.CreationFlags&createBreakawayFromJob != 0 {
-		// The job we run in may forbid breakaway; start without it.
-		cmd.SysProcAttr.CreationFlags &^= createBreakawayFromJob
-		cmd.Process = nil
-		err = cmd.Start()
-	}
-	return err
+func detach(cmd *exec.Cmd, flags uint32) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags, HideWindow: true}
 }
 
 func running(pid int) bool {

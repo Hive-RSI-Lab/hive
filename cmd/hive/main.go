@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,10 @@ const usage = `hive: a small team of AI agents working on your projects.
 `
 
 func main() {
+	// Messages name the command the person actually runs (hive, hive-v0, ...).
+	if name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe"); strings.HasPrefix(name, "hive") && !strings.Contains(name, "linux") {
+		core.Cmd = name
+	}
 	os.Exit(run(os.Args[1:]))
 }
 
@@ -78,10 +83,10 @@ func run(args []string) int {
 	case "init":
 		return firstRun()
 	case "-v", "--version", "version":
-		fmt.Println("hive", core.Version)
+		fmt.Println(core.Cmd, core.Version)
 		return 0
 	case "-h", "--help", "help":
-		fmt.Print(usage)
+		fmt.Print(usageText())
 		return 0
 	case "ask":
 		return cmdAsk(args)
@@ -129,19 +134,23 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Println("The Hive is stopped. Agents mid-turn finish on their own; `hive` starts it again.")
+		fmt.Println("The Hive is stopped. Agents mid-turn finish on their own; `" + core.Cmd + "` starts it again.")
 		return 0
 	case "uninstall":
 		return cmdUninstall()
 	}
-	fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)
+	fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usageText())
 	return 2
+}
+
+func usageText() string {
+	return strings.ReplaceAll(strings.ReplaceAll(usage, "\n  hive", "\n  "+core.Cmd), "hive: a small", core.Cmd+": a small")
 }
 
 func workspace() (core.Workspace, error) {
 	ws, ok := core.FindWorkspace()
 	if !ok {
-		return ws, errors.New("no Hive here yet; run `hive` to set one up")
+		return ws, errors.New("no Hive here yet; run `" + core.Cmd + "` to set one up")
 	}
 	return ws, nil
 }
@@ -155,7 +164,7 @@ func withClient(fn func(*api.Client) error) int {
 		}
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "hive:", err)
+		fmt.Fprintln(os.Stderr, core.Cmd+":", err)
 		return 1
 	}
 	return 0
@@ -179,7 +188,7 @@ func cmdDaemon(args []string) int {
 		return 0
 	}
 	if err := daemon.Run(ws, *waitFor); err != nil {
-		fmt.Fprintln(os.Stderr, "hive daemon:", err)
+		fmt.Fprintln(os.Stderr, core.Cmd+" daemon:", err)
 		return 1
 	}
 	return 0
@@ -192,11 +201,11 @@ func cmdOpen() int {
 	}
 	c, err := daemon.Start(ws)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "hive:", err)
+		fmt.Fprintln(os.Stderr, core.Cmd+":", err)
 		return 1
 	}
 	if err := tui.Run(c, ws); err != nil {
-		fmt.Fprintln(os.Stderr, "hive:", err)
+		fmt.Fprintln(os.Stderr, core.Cmd+":", err)
 		return 1
 	}
 	return 0
@@ -234,7 +243,7 @@ func cmdAsk(args []string) int {
 			return err
 		}
 		if !*wait {
-			fmt.Println("Sent to the lead. Its reply shows in the control center (`hive`), or use --wait.")
+			fmt.Println("Sent to the lead. Its reply shows in the control center (`" + core.Cmd + "`), or use --wait.")
 			return nil
 		}
 		fmt.Println("Sent. Waiting for the lead's reply...")
@@ -309,14 +318,14 @@ func cmdDoctor(args []string) int {
 			fmt.Printf("✗ %s missing. %s\n", t.Name, t.Get)
 		case t.NeedsLogin && !t.LoggedIn:
 			ok = false
-			fmt.Printf("✗ %s is not logged in. Run `hive login`.\n", t.Name)
+			fmt.Printf("✗ %s is not logged in. Run `%s login`.\n", t.Name, core.Cmd)
 		default:
 			fmt.Printf("✓ %s\n", t.Name)
 		}
 	}
 	ws, found := core.FindWorkspace()
 	if !found {
-		fmt.Println("✗ no workspace yet; run `hive`")
+		fmt.Println("✗ no workspace yet; run `" + core.Cmd + "`")
 		return 1
 	}
 	fmt.Printf("✓ workspace %s\n", ws.Root)
@@ -344,7 +353,7 @@ func cmdDoctor(args []string) int {
 	if setup.AutostartEnabled() {
 		fmt.Println("✓ starts with the machine")
 	} else {
-		fmt.Println("· doesn't start with the machine (run `hive` once to set it up)")
+		fmt.Println("· doesn't start with the machine (run `" + core.Cmd + "` once to set it up)")
 	}
 	if _, running := daemon.Running(ws); running {
 		fmt.Println("✓ running")

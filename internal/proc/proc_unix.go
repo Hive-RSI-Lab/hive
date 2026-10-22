@@ -7,9 +7,9 @@ import (
 	"syscall"
 )
 
-func detach(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+var detachAttempts = []uint32{0}
 
-func startCmd(cmd *exec.Cmd) error { return cmd.Start() }
+func detach(cmd *exec.Cmd, _ uint32) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 
 func running(pid int) bool {
 	err := syscall.Kill(pid, 0)

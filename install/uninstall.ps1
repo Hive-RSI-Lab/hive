@@ -1,7 +1,8 @@
 # Uninstall the Hive (your folder, ~\hive by default, is left alone):
-#   irm https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/uninstall.ps1 | iex
-$dir = Join-Path $env:LOCALAPPDATA 'Programs\hive'
-$exe = Join-Path $dir 'hive.exe'
+#   gh api repos/ihsan-sa/hive-standalone-build/contents/install/uninstall.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
+$cmd = if ($env:HIVE_CMD) { $env:HIVE_CMD } else { 'hive-v0' }
+$dir = if ($env:HIVE_BIN_DIR) { $env:HIVE_BIN_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\$cmd" }
+$exe = Join-Path $dir "$cmd.exe"
 if (Test-Path $exe) { & $exe uninstall }
 Start-Sleep -Seconds 1
 Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue

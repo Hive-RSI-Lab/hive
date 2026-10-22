@@ -19,30 +19,36 @@ type Handle struct {
 // StartDetached starts argv in its own session/process group with stdin and
 // stdout redirected to files, so it outlives the caller.
 func StartDetached(argv, env []string, dir, stdin, stdout string) (Handle, error) {
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = env
-	cmd.Dir = dir
 	in, err := openIn(stdin)
 	if err != nil {
 		return Handle{}, err
 	}
 	defer in.Close()
-	cmd.Stdin = in
+	var out, errf *os.File
 	if stdout != "" {
-		out, err := OpenOutput(stdout)
-		if err != nil {
+		if out, err = OpenOutput(stdout); err != nil {
 			return Handle{}, err
 		}
 		defer out.Close()
-		errf, err := OpenOutput(stdout + ".err")
-		if err != nil {
+		if errf, err = OpenOutput(stdout + ".err"); err != nil {
 			return Handle{}, err
 		}
 		defer errf.Close()
-		cmd.Stdout, cmd.Stderr = out, errf
 	}
-	detach(cmd)
-	if err := startCmd(cmd); err != nil {
+	// Each attempt needs a fresh Cmd: exec refuses a second Start.
+	var cmd *exec.Cmd
+	for _, flags := range detachAttempts {
+		cmd = exec.Command(argv[0], argv[1:]...)
+		cmd.Env, cmd.Dir, cmd.Stdin = env, dir, in
+		if out != nil {
+			cmd.Stdout, cmd.Stderr = out, errf
+		}
+		detach(cmd, flags)
+		if err = cmd.Start(); err == nil {
+			break
+		}
+	}
+	if err != nil {
 		return Handle{}, err
 	}
 	h := Handle{PID: cmd.Process.Pid, Started: StartTime(cmd.Process.Pid)}

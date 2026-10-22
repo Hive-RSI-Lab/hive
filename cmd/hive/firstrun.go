@@ -27,7 +27,7 @@ func firstRun() int {
 		}
 	}
 	if missing {
-		fmt.Println("\nInstall what's missing, then run `hive` again.")
+		fmt.Println("\nInstall what's missing, then run `" + core.Cmd + "` again.")
 		return 1
 	}
 	for _, t := range setup.Check() {
@@ -38,7 +38,7 @@ func firstRun() int {
 					return 1
 				}
 			} else {
-				fmt.Println("The Hive needs both logins. Run `hive login` when ready.")
+				fmt.Println("The Hive needs both logins. Run `" + core.Cmd + " login` when ready.")
 				return 1
 			}
 			break
@@ -66,7 +66,7 @@ func firstRun() int {
 		if setup.Prompt("Type `bare` to run agents without a sandbox anyway, or press Enter to fix it first", "") == "bare" {
 			setup.AcceptBare(ws)
 		} else {
-			fmt.Println("Agents won't start until the sandbox works (`hive doctor` checks it). Continuing setup.")
+			fmt.Println("Agents won't start until the sandbox works (`" + core.Cmd + " doctor` checks it). Continuing setup.")
 		}
 	} else {
 		fmt.Println("\n✓ " + msg)

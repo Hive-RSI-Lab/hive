@@ -297,7 +297,7 @@ func (s *server) routes() http.Handler {
 		}
 		cur := a.C.WS.LoadConfig()
 		if c.Sandbox == "bare" && cur.BareAccepted == "" {
-			return nil, errors.New("bare runs need the warning read first (`hive doctor --bare`)")
+			return nil, errors.New("bare runs need the warning read first (`" + core.Cmd + " doctor --bare`)")
 		}
 		c.BareAccepted = cur.BareAccepted
 		if err := a.C.WS.SaveConfig(c); err != nil {
