@@ -100,6 +100,7 @@ func (a *App) Tick() {
 	a.Improve.TickSweeps()
 	a.KB.Tick()
 	a.System.Tick()
+	a.Projects.Tick()
 }
 
 // Run ticks until ctx ends.
