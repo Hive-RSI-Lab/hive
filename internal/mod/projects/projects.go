@@ -34,7 +34,7 @@ func New(c *core.Core, ch *chat.Module, w *work.Module, im *improve.Module) *Mod
 	m := &Module{C: c, Chat: ch, Work: w, Improve: im, retry: map[string]time.Time{}, lastErr: map[string]string{}}
 	ops := c.Runs.Ops()
 	ops.Register(core.Op{Name: "create_project", Roles: []string{"lead"}, Help: `{"name","repo","description","goals","isolated"}`, Fn: m.opCreate})
-	ops.Register(core.Op{Name: "status", Help: `{} -> projects, work in flight, scores, what waits on the person`, Fn: func(core.Run, json.RawMessage) (any, error) { return m.Status(), nil }})
+	ops.Register(core.Op{Name: "status", Help: `{} -> projects, work in flight, scores, what waits on the person, the live config`, Fn: func(core.Run, json.RawMessage) (any, error) { return m.Status(), nil }})
 	return m
 }
 
@@ -225,5 +225,5 @@ func (m *Module) Status() map[string]any {
 	for _, a := range m.C.Person.Open() {
 		waiting = append(waiting, a.Title)
 	}
-	return map[string]any{"projects": ps, "waiting_on_person": waiting}
+	return map[string]any{"projects": ps, "waiting_on_person": waiting, "config": m.C.WS.LoadConfig()}
 }

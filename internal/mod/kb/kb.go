@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	hive "github.com/ihsan-sa/hive-standalone-build"
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/agents"
 )
@@ -41,6 +42,7 @@ type Module struct {
 func New(c *core.Core, a *agents.Agents) *Module {
 	m := &Module{C: c, Agents: a}
 	m.ensureRepo()
+	m.seedSelf(hive.Source)
 	c.J.Replay(func(e core.Event) {
 		var f struct{ Run string }
 		e.Decode(&f)
