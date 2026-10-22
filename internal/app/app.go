@@ -13,6 +13,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/modules"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/projects"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/release"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/report"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/risk"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/system"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
@@ -79,6 +80,7 @@ func New(ws core.Workspace, forge core.Forge) (*App, error) {
 		return "updated " + join(changed), nil
 	}})
 	a.System.Register(system.Job{Name: "hive.update", AtStart: true, Fn: a.Release.AutoUpdate})
+	a.System.Register(system.Job{Name: "report.send", Fn: (&report.Module{C: c}).Send})
 	return a, nil
 }
 

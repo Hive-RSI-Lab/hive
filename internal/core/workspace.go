@@ -55,6 +55,11 @@ type Config struct {
 	ReviewRounds int                        `json:"review_rounds"`
 	Projects     map[string]ProjectSettings `json:"projects,omitempty"`
 	Schedules    map[string]string          `json:"schedules,omitempty"` // name -> "every 12h" | "daily 03:00" | "off"
+	// Share is when the person said yes to sharing failures and usage with
+	// the developer (docs/report.md); empty is off.
+	Share     string `json:"share,omitempty"`
+	ShareURL  string `json:"share_url,omitempty"`
+	InstallID string `json:"install_id,omitempty"`
 }
 
 // ProjectSettings override workspace defaults per project.
@@ -80,6 +85,7 @@ func DefaultConfig() Config {
 			"kb.file":        "daily 04:00",
 			"modules.update": "every 24h",
 			"hive.update":    "every 6h",
+			"report.send":    "every 6h",
 		},
 	}
 }

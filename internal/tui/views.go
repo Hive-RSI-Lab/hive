@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -651,6 +652,10 @@ func (m *model) settings() []setting {
 	if c.AutoUpdate {
 		auto = "on"
 	}
+	share := "off"
+	if c.Share != "" {
+		share = "on since " + c.Share
+	}
 	sandboxVal := c.Sandbox
 	if m.st.Sandbox != "" {
 		sandboxVal += " (" + m.st.Sandbox + ")"
@@ -665,6 +670,7 @@ func (m *model) settings() []setting {
 		{label: "WSL distro", value: c.WSLDistro, key: "wsl_distro"},
 		{label: "auto-update", value: auto, key: "auto_update"},
 		{label: "release repo", value: c.ReleaseRepo, key: "release_repo"},
+		{label: "share failures", value: share + "  (with the developer, scrubbed; `" + core.Cmd + " report` shows what was sent)", key: "share"},
 	}
 	for _, name := range sortedKeys(c.Schedules) {
 		s = append(s, setting{label: "schedule " + name, value: c.Schedules[name], key: "schedule:" + name})
@@ -722,6 +728,12 @@ func (m *model) keySettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "auto_update":
 			c.AutoUpdate = !c.AutoUpdate
 			return m, m.post("/api/config", c, "auto-update changed")
+		case "share":
+			c.Share = ""
+			if m.st.Config.Share == "" {
+				c.Share = time.Now().UTC().Format(time.RFC3339)
+			}
+			return m, m.post("/api/config", c, "sharing changed")
 		case "sandbox":
 			if c.Sandbox == "bare" {
 				c.Sandbox = "auto"

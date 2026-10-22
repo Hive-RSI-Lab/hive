@@ -45,3 +45,4 @@ case ":$PATH:" in
 esac
 "$DIR/$CMD" --version
 echo "Installed. Run: $CMD"
+echo "Its first run asks whether to share failures with the developer; that stays off unless you say yes."

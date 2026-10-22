@@ -60,6 +60,11 @@ func firstRun() int {
 		return 1
 	}
 
+	if err := setShare(ws, strings.HasPrefix(strings.ToLower(setup.Prompt("\n"+fmt.Sprintf(shareQuestion, core.Cmd), "n")), "y")); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
 	c := &core.Core{WS: ws}
 	if msg, err := setup.SandboxReport(ws, c.HiveLinux()); err != nil {
 		fmt.Printf("\nAgents need a sandbox, and this machine doesn't have one ready:\n  %v\n\n%s\n", err, sandbox.BareWarning)

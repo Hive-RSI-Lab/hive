@@ -19,6 +19,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/daemon"
 	"github.com/ihsan-sa/hive-standalone-build/internal/fakeagent"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/report"
 	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 	"github.com/ihsan-sa/hive-standalone-build/internal/setup"
 	"github.com/ihsan-sa/hive-standalone-build/internal/tui"
@@ -33,6 +34,7 @@ const usage = `hive: a small team of AI agents working on your projects.
   hive answer <id> <opt>   answer something waiting on you
   hive login               log in to Claude Code and GitHub with their own logins
   hive doctor [--bare]     check the install; --bare opts into unsandboxed agents
+  hive report [on|off|show|send]  sharing failures with the developer: state, switch, last batch, send now
   hive update              install the newest release
   hive shutdown            stop the Hive (running agents finish their turn)
   hive uninstall           remove autostart and the binary's record; leaves your folder
@@ -122,6 +124,8 @@ func run(args []string) int {
 		return 0
 	case "doctor":
 		return cmdDoctor(args)
+	case "report":
+		return cmdReport(args)
 	case "update":
 		return withClient(func(c *api.Client) error {
 			var msg string
@@ -317,14 +321,18 @@ func cmdStatus() int {
 func cmdDoctor(args []string) int {
 	bare := len(args) > 0 && args[0] == "--bare"
 	ok := true
+	var failed []string
+	fail := func(format string, a ...any) {
+		ok = false
+		failed = append(failed, fmt.Sprintf(format, a...))
+		fmt.Print(failed[len(failed)-1])
+	}
 	for _, t := range setup.Check() {
 		switch {
 		case !t.Found:
-			ok = false
-			fmt.Printf("✗ %s missing. %s\n", t.Name, t.Get)
+			fail("✗ %s missing. %s\n", t.Name, t.Get)
 		case t.NeedsLogin && !t.LoggedIn:
-			ok = false
-			fmt.Printf("✗ %s is not logged in. Run `%s login`.\n", t.Name, core.Cmd)
+			fail("✗ %s is not logged in. Run `%s login`.\n", t.Name, core.Cmd)
 		default:
 			fmt.Printf("✓ %s\n", t.Name)
 		}
@@ -340,8 +348,7 @@ func cmdDoctor(args []string) int {
 		fmt.Printf("! agents run WITHOUT a sandbox (opted in %s); set \"sandbox\": \"auto\" in Settings to go back\n", cfg.BareAccepted)
 	}
 	if msg, err := setup.SandboxReport(ws, c.HiveLinux()); err != nil {
-		ok = false
-		fmt.Printf("✗ sandbox: %v\n", err)
+		fail("✗ sandbox: %v\n", err)
 		if bare {
 			fmt.Println("\n" + sandbox.BareWarning)
 			if setup.Prompt("Type `bare` to run agents without a sandbox", "") == "bare" {
@@ -352,8 +359,7 @@ func cmdDoctor(args []string) int {
 	} else {
 		fmt.Println("✓ " + msg)
 		if !setup.WSLClaude(ws.LoadConfig().WSLDistro) {
-			ok = false
-			fmt.Println("✗ Claude Code is not installed inside WSL. Install it there:\n    wsl -- bash -lc \"curl -fsSL https://claude.ai/install.sh | bash\"")
+			fail("✗ Claude Code is not installed inside WSL. Install it there:\n    wsl -- bash -lc \"curl -fsSL https://claude.ai/install.sh | bash\"\n")
 		}
 	}
 	if setup.AutostartEnabled() {
@@ -367,6 +373,7 @@ func cmdDoctor(args []string) int {
 		fmt.Println("· not running")
 	}
 	if !ok {
+		report.Note(ws, report.Failure{Kind: "doctor", Text: strings.Join(failed, "")})
 		return 1
 	}
 	return 0

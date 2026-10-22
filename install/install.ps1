@@ -70,3 +70,4 @@ if (-not $env:HIVE_SKIP_WSL) {
 
 Write-Host ''
 Write-Host "Installed $(& $exe --version). Run: $cmd"
+Write-Host "Its first run asks whether to share failures with the developer; that stays off unless you say yes."
