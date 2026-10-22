@@ -9,7 +9,7 @@ One Go binary, `hive`. A small core plus default modules; the daemon runs both a
 | `internal/core` | **The core.** Journal (append-only event log), workspace + config, runs (agent turns, park/resume, crash retry, reattach), mailbox ops, effects process (git/forge, commit extraction, gate guarantees), project registry, token source, person queue, ceiling notes. ~3k lines. |
 | `internal/sandbox` | Linux namespaces (`sandbox-exec` outer + `sandbox-init` pid 1), WSL launcher (Windows), Seatbelt (macOS, untested), bare (opt-in). Egress proxy. |
 | `internal/harness` | Adapter seam. Claude Code (`claude -p --output-format stream-json`), fake (scripted), Codex stub. |
-| `internal/proc` | Detached processes; liveness by pid + start time. |
+| `internal/proc` | Detached processes; liveness by pid + start time, and a zombie is dead. |
 | `internal/agentcli` | `hive agent <op>`: what agents call from inside the sandbox. |
 | `internal/fakeagent` | `hive fake-agent`: scripted agent for tests and dry runs (FAKE:* keywords). |
 | `internal/mod/*` | Default modules: `agents` (prompts, spawner), `chat`, `work` (ask → merge), `improve` (measure, keep/revert, sweep), `kb`, `system` (schedules, wake-ups), `risk` (requests past the sandbox → warden, tribunal or person), `projects`, `modules` (registry, installs, updates), `release` (self-update, self-release). |

@@ -271,6 +271,9 @@ func warden(all string) error {
 	if m := hostCheckout.FindStringSubmatch(all); m != nil {
 		dir = filepath.ToSlash(m[1]) // sh would eat a Windows path's backslashes
 	}
+	if strings.Contains(all, "FAKE:wardenslow") { // still weighing when the Hive restarts
+		time.Sleep(5 * time.Second)
+	}
 	d, script := "do", "cp "+dir+"/.hive/goals.md . && echo installing left-pad"
 	if strings.Contains(all, "FAKE:wardentribunal") {
 		d = "tribunal"

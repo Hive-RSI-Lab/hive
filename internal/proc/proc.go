@@ -1,6 +1,7 @@
 // Package proc starts detached processes and checks on them across restarts.
 // A process is identified by pid plus start time, so a reused pid after a
-// reboot is never mistaken for a live run.
+// reboot is never mistaken for a live run, and an exited one nobody reaped
+// (a zombie) counts as gone.
 package proc
 
 import (
