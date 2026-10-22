@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -111,5 +112,55 @@ func TestViewsFitTheScreen(t *testing.T) {
 		}
 		m.Update(keys("?")[0])
 		checkWidth(t, m.View(), w, h, "help")
+	}
+}
+
+func TestSchedulesAreHours(t *testing.T) {
+	for stored, shown := range map[string]string{"every 12h": "12 hours", "every 90m": "every 90m", "daily 04:00": "daily 04:00", "off": "off"} {
+		if got := scheduleText(stored); got != shown {
+			t.Errorf("scheduleText(%q) = %q, want %q", stored, got, shown)
+		}
+	}
+	for typed, stored := range map[string]string{"12": "every 12h", "12 hours": "every 12h", "0": "off", "off": "off"} {
+		if got, err := scheduleHours(typed); err != nil || got != stored {
+			t.Errorf("scheduleHours(%q) = %q, %v, want %q", typed, got, err, stored)
+		}
+	}
+	if _, err := scheduleHours("daily"); err == nil {
+		t.Error("scheduleHours took words")
+	}
+}
+
+func TestModelIsAPickList(t *testing.T) {
+	if core.DefaultConfig().Model != "opus" || core.DefaultConfig().LeadModel != "opus" {
+		t.Fatal("Opus is not the default model")
+	}
+	c := core.DefaultConfig()
+	c.ModelChoices = []string{"sonnet", "my-model"}
+	ch := modelChoices(c)
+	if ch[0] != "opus" || ch[len(ch)-1] != custom || ch[len(ch)-2] != "my-model" || len(slices.Compact(slices.Sorted(slices.Values(ch)))) != len(ch) {
+		t.Fatalf("choices %v: want opus first, the config's own added once, custom last", ch)
+	}
+	m := testModel(80, 24)
+	m.section = secSettings
+	for i, s := range m.settings() {
+		if s.key == "lead_model" {
+			m.setSel = i
+		}
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.picking || m.settings()[m.setSel].choices[m.pickSel] != "opus" {
+		t.Fatalf("enter on the lead model should open its list at opus (picking %v, sel %d)", m.picking, m.pickSel)
+	}
+	if !strings.Contains(m.View(), custom) {
+		t.Fatal("the open list does not show the custom entry")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyUp}) // already at the top
+	for range len(m.settings()[m.setSel].choices) {
+		m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.picking || !m.editing {
+		t.Fatal("custom should open a text field")
 	}
 }

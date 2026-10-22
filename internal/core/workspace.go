@@ -45,6 +45,8 @@ type Config struct {
 	LeadModel      string   `json:"lead_model"`
 	ReviewerModel  string   `json:"reviewer_model"`
 	TribunalModels []string `json:"tribunal_models"`
+	// ModelChoices adds models to the harness's known list in Settings' pick-lists.
+	ModelChoices []string `json:"model_choices,omitempty"`
 	// Sandbox: "auto" uses the platform sandbox and refuses agents without one;
 	// "bare" is the documented, opted-in state where agents run unsandboxed.
 	Sandbox      string                     `json:"sandbox"`
@@ -69,7 +71,7 @@ func DefaultConfig() Config {
 	return Config{
 		Autonomy:       2,
 		Harness:        "claude",
-		Model:          "sonnet",
+		Model:          "opus",
 		LeadModel:      "opus",
 		ReviewerModel:  "opus",
 		TribunalModels: []string{"opus", "sonnet", "fable"},
@@ -100,11 +102,11 @@ func (w Workspace) LoadConfig() Config {
 	if err == nil {
 		_ = json.Unmarshal(raw, &c)
 		// A config from before lead_model: a model the person chose stays the
-		// lead's; the old default moves the lead to the new one.
+		// lead's; the old default ("sonnet") moves the lead to opus.
 		var had struct {
 			LeadModel *string `json:"lead_model"`
 		}
-		if json.Unmarshal(raw, &had) == nil && had.LeadModel == nil && c.Model != DefaultConfig().Model {
+		if json.Unmarshal(raw, &had) == nil && had.LeadModel == nil && c.Model != "sonnet" {
 			c.LeadModel = c.Model
 		}
 	}
