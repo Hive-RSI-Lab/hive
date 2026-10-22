@@ -616,7 +616,7 @@ func passFail(ok bool) string {
 }
 
 // VerdictSchema is the reviewer's structured answer.
-const VerdictSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["land","fix"]},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":"integer"},"issue":{"type":"string"}},"required":["issue"]}},"token":{"type":"string"}},"required":["verdict","summary","token"]}`
+const VerdictSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["land","fix"]},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":"integer"},"issue":{"type":"string"}},"required":["issue"]}},"advice":{"type":"array","items":{"type":"string"}},"token":{"type":"string"}},"required":["verdict","summary","token"]}`
 
 // reviewToken is copied from brief.md into the verdict, so a land shows the
 // reviewer read its inputs.
@@ -643,11 +643,19 @@ func (m *Module) review(t *Task, p core.Project) error {
 		}
 		c, _ := m.C.Effects.GetCheck(p.Name, t.SHA, "test")
 		w, _ := m.C.Runs.Get(t.Worker)
+		// The project's standing rules come from main, so a change can't move
+		// the bar it is judged against. Lessons are already in the worker's brief.
+		var rules strings.Builder
+		for _, f := range []string{"docs/REVIEW.md", ".hive/goals.md"} {
+			if s := strings.TrimSpace(m.C.Effects.ReadFile(p, main, f)); s != "" {
+				fmt.Fprintf(&rules, "\n\n## `%s` on main\n\n%s", f, s)
+			}
+		}
 		brief := fmt.Sprintf("Review round %d of task %s: %q.\n\nThe brief, the exact diff and the test run are in $HIVE_RUN (brief.md, diff.patch, tests.txt). Give your verdict.", t.Round+1, t.ID, t.Label())
 		spec := m.Agents.Spec(id, "reviewer", p.Name, dir, brief)
 		spec.ReadOnly, spec.Schema, spec.Task = true, VerdictSchema, t.ID
 		spec.Inputs = map[string]string{"sha": t.SHA, "diff.patch": ch.Diff, "tests.txt": c.Output,
-			"brief.md": "Review token: " + reviewToken(id) + "\n\n" + w.Brief + "\n\n## The worker's account\n\n" + finishText(w)}
+			"brief.md": "Review token: " + reviewToken(id) + "\n\n" + w.Brief + "\n\n## The worker's account\n\n" + finishText(w) + rules.String()}
 		if _, err := m.C.Runs.Start(spec); err != nil {
 			return err
 		}
@@ -684,8 +692,20 @@ func (m *Module) review(t *Task, p core.Project) error {
 		}
 		fmt.Fprintf(&fb, "\n- `%s` %s", loc, f.Issue)
 	}
+	for _, a := range v.Advice {
+		fmt.Fprintf(&fb, "\n- Advice: %s", a)
+	}
 	m.C.Effects.Forge.Comment(p.Repo, t.PR.Number, fb.String())
 	if v.Verdict == "land" {
+		// Advice with a land doesn't hold the merge; it becomes one follow-up brief.
+		if len(v.Advice) > 0 && len(m.List(func(x Task) bool { return x.From == r.ID })) == 0 {
+			if _, err := m.File(Brief{Project: p.Name, From: r.ID, Chat: t.Chat, Thread: t.Thread,
+				Title: "Follow up the review of " + core.Clip(t.Label(), 100),
+				Done:  "Each item below is done, or judged not worth doing with the reason in your account.",
+				Known: "The reviewer landed " + t.PR.URL + " with this advice:\n\n- " + strings.Join(v.Advice, "\n- ")}); err != nil {
+				return err
+			}
+		}
 		t.Stage = StageMerging
 		m.save(t, "reviewer: land")
 		return nil
