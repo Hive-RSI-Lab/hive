@@ -23,7 +23,7 @@
   <h2>Install</h2>
   <p>macOS and Linux, in a terminal:</p>
   <pre><code>curl -fsSL https://hive.ihsan.cc/install.sh | sh</code></pre>
-  <p>Windows, in PowerShell:</p>
+  <p>Windows, in PowerShell. On Windows PowerShell 5.1, run <code>[Net.ServicePointManager]::SecurityProtocol = 'Tls12'</code> first so the download can use TLS 1.2.</p>
   <pre><code>irm https://hive.ihsan.cc/install.ps1 | iex</code></pre>
   <p>Then run <code>hive-v0</code>. On Windows, agents are sandboxed inside WSL 2, and the installer sets up Claude Code there.</p>
 </section>

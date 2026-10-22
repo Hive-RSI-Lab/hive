@@ -10,13 +10,13 @@ macOS / Linux:
 
     curl -fsSL https://hive.ihsan.cc/install.sh | sh
 
-Windows (PowerShell):
+Windows (PowerShell; on Windows PowerShell 5.1, run `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'` first so the download can use TLS 1.2):
 
     irm https://hive.ihsan.cc/install.ps1 | iex
 
 No GitHub login is needed to install. Running the line again reinstalls.
 
-Then run `hive`. (The installer puts it on your PATH as `hive-v0`, or the name in `HIVE_CMD`; a build from source is `hive`.) The first run checks for git, Claude Code and the GitHub CLI, offers their own logins, asks where to live (Enter for `~/hive`) and for a GitHub repository (Enter makes a small private demo project), and opens the control center with the lead's chat.
+Then run `hive-v0`. (That is the name the installer puts on your PATH, or the name in `HIVE_CMD`; a build from source is `hive`.) The first run checks for git, Claude Code and the GitHub CLI, offers their own logins, asks where to live (Enter for `~/hive`) and for a GitHub repository (Enter makes a small private demo project), and opens the control center with the lead's chat.
 
 On Windows, agents are sandboxed inside WSL 2; the installer installs or updates Claude Code there.
 

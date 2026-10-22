@@ -40,9 +40,10 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           # A release's own run waits for its binaries, which the release workflow attaches.
+          # A failed gh call (the release not visible yet) counts as no binaries, so the loop waits under bash -e.
           for i in $(seq 60); do
-            t=${TAG:-$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)}
-            n=$(gh release view "$t" -R "$GITHUB_REPOSITORY" --json assets -q '.assets | length')
+            t=${TAG:-$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName || true)}
+            n=$(gh release view "$t" -R "$GITHUB_REPOSITORY" --json assets -q '.assets | length') || n=0
             [ "$n" -ge 6 ] && break
             echo "waiting for $t's binaries ($n so far)"; sleep 20
           done
@@ -149,7 +150,9 @@ jobs:
       - name: start again and shut down
         shell: bash
         run: |
-          hive-v0 status | grep -qF "Hive $TAG " || { echo "::error::the reinstalled Hive didn't start"; exit 1; }
+          # Not `status | grep -q`: grep quits at the first line, status dies of SIGPIPE on the next, and pipefail fails the step.
+          hive-v0 status > status.txt || true
+          grep -qF "Hive $TAG " status.txt || { cat status.txt; echo "::error::the reinstalled Hive didn't start"; exit 1; }
           hive-v0 shutdown
           sleep 2
           hive-v0 doctor > doctor.txt || true
