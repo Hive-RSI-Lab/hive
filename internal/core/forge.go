@@ -33,6 +33,7 @@ type Forge interface {
 	Name() string
 	User() (string, error)
 	EnsureRepo(repo, description string) (created bool, err error)
+	Fork(repo string) (string, error) // the person's fork of repo, made on first need
 	Clone(repo, dir string) error
 	IsEmpty(repo string) (bool, error)
 	DefaultBranch(repo string) string
@@ -73,6 +74,11 @@ func (g GitHub) EnsureRepo(repo, description string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// Fork returns the person's fork of repo, creating it if they have none.
+func (GitHub) Fork(repo string) (string, error) {
+	return gh("api", "-X", "POST", "repos/"+repo+"/forks", "-q", ".full_name")
 }
 
 // ghHelper is git's credential helper backed by the person's gh login, so

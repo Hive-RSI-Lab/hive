@@ -33,7 +33,7 @@ type Module struct {
 func New(c *core.Core, ch *chat.Module, w *work.Module, im *improve.Module) *Module {
 	m := &Module{C: c, Chat: ch, Work: w, Improve: im, retry: map[string]time.Time{}, lastErr: map[string]string{}}
 	ops := c.Runs.Ops()
-	ops.Register(core.Op{Name: "create_project", Roles: []string{"lead"}, Help: `{"name","repo","description","goals","isolated"}`, Fn: m.opCreate})
+	ops.Register(core.Op{Name: "create_project", Roles: []string{"lead"}, Help: `{"name","repo","description","goals","isolated","self"} (self: the Hive's own code, in the person's fork of it)`, Fn: m.opCreate})
 	ops.Register(core.Op{Name: "status", Help: `{} -> projects, work in flight, scores, what waits on the person, the live config`, Fn: func(core.Run, json.RawMessage) (any, error) { return m.Status(), nil }})
 	return m
 }
@@ -71,6 +71,21 @@ func (m *Module) Create(s Spec) (core.Project, bool, error) {
 	f := m.C.Effects.Forge
 	if s.Demo && s.Name == "" {
 		s.Name = "textkit"
+	}
+	// The Hive's own project works in the person's fork, made on first need,
+	// or in the Hive's repository itself when it is theirs.
+	if s.Self && s.Repo == "" {
+		up := m.C.WS.LoadConfig().ReleaseRepo
+		user, err := f.User()
+		if err != nil {
+			return core.Project{}, false, fmt.Errorf("who are you on %s? %v", f.Name(), err)
+		}
+		if s.Repo = up; !strings.HasPrefix(up, user+"/") {
+			if s.Repo, err = f.Fork(up); err != nil {
+				return core.Project{}, false, fmt.Errorf("forking %s: %v", up, err)
+			}
+		}
+		s.Name = orDefault(s.Name, "hive")
 	}
 	if s.Repo == "" && s.Name == "" {
 		return core.Project{}, false, errors.New("give a name or a repository")

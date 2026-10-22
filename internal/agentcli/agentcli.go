@@ -113,8 +113,8 @@ func parseArgs(a []string) (map[string]any, error) {
 			out[k] = v
 			continue
 		}
-		if i+1 >= len(a) {
-			out[k] = "true"
+		if i+1 >= len(a) || strings.HasPrefix(a[i+1], "--") {
+			out[k] = true // a bare switch, such as --self
 			continue
 		}
 		v := a[i+1]

@@ -181,6 +181,19 @@ func leadAsk(ask, system string) (string, error) {
 	if scoreQ.MatchString(ask) && strings.Contains(system, "look first") {
 		return howScored()
 	}
+	// As a real lead does with its role doc: the Hive's own code is its own project.
+	if hm := selfRe.FindStringSubmatch(ask); hm != nil && strings.Contains(system, "create_project --self") {
+		out, err := call("create_project", map[string]any{"self": true}, 3*time.Minute)
+		if err != nil {
+			return "", err
+		}
+		var p struct{ Project, Repo string }
+		json.Unmarshal(out, &p)
+		if _, err := call("brief", map[string]string{"project": p.Project, "title": clip(hm[1], 60), "done": "FAKE: the change is merged", "known": hm[1]}, 3*time.Minute); err != nil {
+			return "", err
+		}
+		return "That's the Hive's own code, so I filed it in project " + p.Project + " (" + p.Repo + "); a kept merge there is released and offered upstream.", nil
+	}
 	if strings.HasPrefix(strings.ToLower(ask), "hello") {
 		return "Hello. I'm the lead. Tell me what you'd like done.", nil
 	}
@@ -214,6 +227,9 @@ func leadAsk(ask, system string) (string, error) {
 	}
 	return "Understood: " + clip(ask, 80) + ". I've started a piece of work on it" + where + ".", nil
 }
+
+// selfRe asks for a change to the Hive itself.
+var selfRe = regexp.MustCompile(`(?i)fix the hive itself: (.+)`)
 
 // hiveQ is a question about the Hive itself, which a lead answers from what it reads.
 var hiveQ = regexp.MustCompile(`(?i)does the hive have`)

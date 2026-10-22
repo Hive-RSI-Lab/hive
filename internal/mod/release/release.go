@@ -36,14 +36,32 @@ func AssetName(goos, goarch string) string {
 	return n
 }
 
-// Check returns the newest release tag if it is newer than this build.
-func (m *Module) Check() (string, bool, error) {
-	cfg := m.C.WS.LoadConfig()
-	rel, err := m.C.Effects.Forge.LatestRelease(cfg.ReleaseRepo)
-	if err != nil {
-		return "", false, err
+// Check returns the newest release, and where it is, if it is newer than this
+// build. It looks at the Hive's releases and at the Hive's own project, so a
+// change the person's Hive released on their fork is the next update.
+func (m *Module) Check() (repo, tag string, newer bool, err error) {
+	repos := []string{m.C.WS.LoadConfig().ReleaseRepo}
+	for _, p := range m.C.Projects.List() {
+		if p.Self && p.Repo != repos[0] {
+			repos = append(repos, p.Repo)
+		}
 	}
-	return rel.Tag, modules.Newer(core.Version, rel.Tag), nil
+	for i, r := range repos {
+		rel, e := m.C.Effects.Forge.LatestRelease(r)
+		if e != nil {
+			if i == 0 {
+				err = e
+			}
+			continue
+		}
+		if tag == "" || modules.Newer(tag, rel.Tag) {
+			repo, tag = r, rel.Tag
+		}
+	}
+	if tag != "" {
+		err = nil
+	}
+	return repo, tag, tag != "" && modules.Newer(core.Version, tag), err
 }
 
 // Update installs the newest release over this binary. Live runs are separate
@@ -53,14 +71,13 @@ func (m *Module) Update() (string, error) {
 	if !strings.HasPrefix(core.Version, "v") {
 		return "this is a source build (" + core.Version + "); it doesn't update itself", nil
 	}
-	tag, newer, err := m.Check()
+	repo, tag, newer, err := m.Check()
 	if err != nil {
 		return "", err
 	}
 	if !newer {
 		return "already on " + core.Version, nil
 	}
-	cfg := m.C.WS.LoadConfig()
 	tmp, err := os.MkdirTemp("", "hive-update-")
 	if err != nil {
 		return "", err
@@ -70,7 +87,7 @@ func (m *Module) Update() (string, error) {
 	if runtime.GOOS == "windows" {
 		names = append(names, AssetName("linux", "amd64")) // used inside WSL
 	}
-	if err := m.C.Effects.Forge.DownloadAsset(cfg.ReleaseRepo, tag, "checksums.txt", tmp); err != nil {
+	if err := m.C.Effects.Forge.DownloadAsset(repo, tag, "checksums.txt", tmp); err != nil {
 		return "", err
 	}
 	sums, err := readSums(filepath.Join(tmp, "checksums.txt"))
@@ -83,7 +100,7 @@ func (m *Module) Update() (string, error) {
 	}
 	dir := filepath.Dir(exe)
 	for i, name := range names {
-		if err := m.C.Effects.Forge.DownloadAsset(cfg.ReleaseRepo, tag, name, tmp); err != nil {
+		if err := m.C.Effects.Forge.DownloadAsset(repo, tag, name, tmp); err != nil {
 			return "", err
 		}
 		got, err := fileSum(filepath.Join(tmp, name))
@@ -174,7 +191,10 @@ func fileSum(path string) (string, error) {
 }
 
 // AfterKept cuts a release when a kept merge lands in the Hive's own project
-// and its dry run passes on that exact commit.
+// and its dry run passes on that exact commit. The release numbers on from
+// this build, so the install switches to it at its next update. In the
+// person's fork it also offers the change upstream, one pull request that
+// grows with each kept merge.
 func (m *Module) AfterKept(project, sha string) {
 	p, ok := m.C.Projects.Get(project)
 	if !ok || !p.Self {
@@ -192,12 +212,27 @@ func (m *Module) AfterKept(project, sha string) {
 	if rel, err := m.C.Effects.Forge.LatestRelease(p.Repo); err == nil && rel.Tag != "" {
 		last = rel.Tag
 	}
+	if strings.HasPrefix(core.Version, "v") && modules.Newer(last, core.Version) {
+		last = core.Version
+	}
 	next := bump(last)
 	if err := m.C.Effects.Forge.CreateRelease(p.Repo, next, sha, "Released by the Hive after "+core.Short(sha)+" kept its tests and dry run green."); err != nil {
 		m.C.J.MustAppend("alert.raised", map[string]string{"kind": "release", "project": project, "text": "release failed: " + err.Error()})
 		return
 	}
 	m.C.J.MustAppend("hive.released", map[string]string{"project": project, "tag": next, "sha": sha})
+	f, up := m.C.Effects.Forge, m.C.WS.LoadConfig().ReleaseRepo
+	if p.Repo == up {
+		return
+	}
+	head := strings.SplitN(p.Repo, "/", 2)[0] + ":" + p.Branch
+	pr, err := f.CreatePR(up, head, f.DefaultBranch(up), "Improvements from "+p.Repo,
+		"Changes the Hive made to itself in "+p.Repo+", each kept by its tests, review and dry run. Released there as "+next+".")
+	if err != nil {
+		m.C.J.MustAppend("alert.raised", map[string]string{"kind": "release", "project": project, "text": "offering the change upstream failed: " + err.Error()})
+		return
+	}
+	m.C.J.MustAppend("hive.offered", map[string]string{"project": project, "pr": pr.URL})
 }
 
 func bump(tag string) string {

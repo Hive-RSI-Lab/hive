@@ -39,10 +39,23 @@ func TestSourceBuildNeverUpdates(t *testing.T) {
 // newer release and goes on to fetch it (the local forge has no assets to give).
 func TestReleaseBuildUpdates(t *testing.T) {
 	m, _ := releaseAt(t, "v0.1.0")
-	if tag, ok, err := m.Check(); err != nil || !ok || tag != "v9.9.9" {
+	if _, tag, ok, err := m.Check(); err != nil || !ok || tag != "v9.9.9" {
 		t.Fatalf("check: %q %v %v", tag, ok, err)
 	}
 	if _, err := m.Update(); err == nil || !strings.Contains(err.Error(), "release assets") {
 		t.Fatalf("the update didn't try to download v9.9.9: %v", err)
+	}
+}
+
+// A release the person's Hive cut on its own fork is the next update when it
+// is newer than the Hive's own releases.
+func TestCheckFollowsTheFork(t *testing.T) {
+	m, _ := releaseAt(t, "v0.1.0")
+	if _, err := m.C.Projects.Add(core.Project{Name: "hive", Repo: "me/hive", Self: true}); err != nil {
+		t.Fatal(err)
+	}
+	m.C.Effects.Forge.CreateRelease("me/hive", "v9.9.10", "", "")
+	if repo, tag, ok, err := m.Check(); err != nil || !ok || repo != "me/hive" || tag != "v9.9.10" {
+		t.Fatalf("check: %q %q %v %v", repo, tag, ok, err)
 	}
 }
