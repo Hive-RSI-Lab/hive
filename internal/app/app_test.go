@@ -16,7 +16,9 @@ func TestWardenMessagingTheRequesterWaitsInTheApp(t *testing.T) {
 	}
 	cfg := ws.LoadConfig()
 	cfg.Harness = "fake"
-	ws.SaveConfig(cfg)
+	if err := ws.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
 	a, err := New(ws, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -29,11 +31,12 @@ func TestWardenMessagingTheRequesterWaitsInTheApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec.Role = "warden"
+	spec.Parent = worker.ID
 	warden, err := a.C.Runs.Start(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(map[string]string{"to": worker.ID, "text": "which version?"})
+	raw, _ := json.Marshal(map[string]string{"to": "parent", "text": "which version?"})
 	if _, err := a.C.Runs.Ops().Call(warden, "message", raw); err != nil {
 		t.Fatal(err)
 	}
