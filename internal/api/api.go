@@ -65,9 +65,10 @@ type ProjectView struct {
 
 // Alert is a ledger alert.
 type Alert struct {
-	At   time.Time `json:"at"`
-	Kind string    `json:"kind"`
-	Text string    `json:"text"`
+	At    time.Time `json:"at"` // last seen
+	Kind  string    `json:"kind"`
+	Text  string    `json:"text"`
+	Count int       `json:"count"`
 }
 
 // ModuleView is one installed module.

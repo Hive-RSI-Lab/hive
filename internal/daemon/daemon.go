@@ -153,7 +153,14 @@ func (s *server) onEvent(e core.Event) {
 	var a struct{ Kind, Text string }
 	e.Decode(&a)
 	s.mu.Lock()
-	s.alerts = append(s.alerts, api.Alert{At: e.At, Kind: a.Kind, Text: a.Text})
+	for i := range s.alerts {
+		if s.alerts[i].Kind == a.Kind && s.alerts[i].Text == a.Text {
+			s.alerts[i].At, s.alerts[i].Count = e.At, s.alerts[i].Count+1
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.alerts = append(s.alerts, api.Alert{At: e.At, Kind: a.Kind, Text: a.Text, Count: 1})
 	if len(s.alerts) > 50 {
 		s.alerts = s.alerts[len(s.alerts)-50:]
 	}

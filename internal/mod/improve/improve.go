@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -193,7 +194,11 @@ func (m *Module) baseline(p core.Project) {
 		return
 	}
 	m.record(ms)
-	m.C.J.MustAppend("alert.raised", map[string]string{"kind": "baseline", "project": p.Name, "text": "the start of " + p.Name + " has no number yet: " + core.Clip(note, 200) + "; measuring again in 10 minutes"})
+	text := "the start of " + p.Name + " has no number yet: " + core.Clip(note, 200)
+	if why := MissingTool(p.Name, note); why != "" {
+		text = why
+	}
+	m.C.J.MustAppend("alert.raised", map[string]string{"kind": "baseline", "project": p.Name, "text": text + "; measuring again in 10 minutes"})
 }
 
 func (m *Module) measureLoop() {
@@ -397,4 +402,20 @@ func (m *Module) Digest(since int64) string {
 		}
 	}
 	return b.String()
+}
+
+var notFound = regexp.MustCompile(`(?m)(?:^|[:\s])([^\s:]+): (?:command )?not found`)
+
+// MissingTool says in plain words which program a red check could not start,
+// or "" when the output shows no such failure. A name starting with "-" means
+// the command began with an empty program.
+func MissingTool(project, out string) string {
+	m := notFound.FindStringSubmatch(out)
+	if m == nil {
+		return ""
+	}
+	if strings.HasPrefix(m[1], "-") {
+		return "the test command for " + project + " started with no program (an interpreter variable came out empty, so no interpreter is installed), so its tests can't run"
+	}
+	return m[1] + " isn't installed, so " + project + "'s tests can't run"
 }

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,5 +54,21 @@ func TestRestartRunsNewBinary(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("the restart ran %q, want the new binary with %q", got, want)
+	}
+}
+
+// Five identical failures are one alert with a count; a different one is a second alert.
+func TestAlertsDedup(t *testing.T) {
+	s := &server{}
+	raise := func(text string) {
+		raw, _ := json.Marshal(map[string]string{"kind": "baseline", "text": text})
+		s.onEvent(core.Event{Kind: "alert.raised", At: time.Now(), Data: raw})
+	}
+	for i := 0; i < 5; i++ {
+		raise("python3 isn't installed")
+	}
+	raise("git isn't installed")
+	if len(s.alerts) != 2 || s.alerts[0].Count != 5 || s.alerts[1].Count != 1 {
+		t.Fatalf("alerts: %+v", s.alerts)
 	}
 }
