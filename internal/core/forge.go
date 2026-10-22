@@ -169,6 +169,9 @@ type ghPR struct {
 	MergeCommit *struct {
 		Oid string `json:"oid"`
 	} `json:"mergeCommit"`
+	HeadRepositoryOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
 }
 
 func (p ghPR) pr() PR {
@@ -179,10 +182,17 @@ func (p ghPR) pr() PR {
 	return out
 }
 
-const prFields = "number,url,state,headRefOid,mergeable,mergeCommit"
+const prFields = "number,url,state,headRefOid,mergeable,mergeCommit,headRepositoryOwner"
 
 func (g GitHub) FindPR(repo, head string) (PR, bool, error) {
-	out, err := gh("pr", "list", "-R", repo, "--head", head, "--state", "all", "--json", prFields)
+	args := []string{"pr", "list", "-R", repo, "--head", head, "--state", "all", "--json", prFields}
+	// A fork's "owner:branch": gh matches the branch name alone, and once
+	// merged the next change needs a new pull request.
+	owner, branch, fork := strings.Cut(head, ":")
+	if fork {
+		args[5], args[7] = branch, "open"
+	}
+	out, err := gh(args...)
 	if err != nil {
 		return PR{}, false, err
 	}
@@ -191,7 +201,7 @@ func (g GitHub) FindPR(repo, head string) (PR, bool, error) {
 		return PR{}, false, err
 	}
 	for _, p := range list {
-		if p.State != "CLOSED" {
+		if p.State != "CLOSED" && (!fork || p.HeadRepositoryOwner.Login == owner) {
 			return p.pr(), true, nil
 		}
 	}

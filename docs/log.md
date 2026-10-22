@@ -32,3 +32,9 @@
 
 ## 2026-10-22 System prompt inline inside sandboxes, file outside
 - Decision: sandboxed turns pass `--append-system-prompt <text>`; bare Windows turns pass a file | Why: Windows argv is capped at 32k; inside the sandbox argv goes via the spec file with Linux limits, and older Claude Code builds may lack the -file flag | Tradeoff: two code paths in the Claude adapter.
+
+## 2026-10-22 The Hive's own code is a fork made on first need
+- Decision: the self project is the person's GitHub fork of `release_repo`, created by `create_project --self`; a kept merge releases on the fork numbered on from the running version, the updater takes the newest of fork and upstream, and the fork's main is offered upstream as one PR | Why: a release binary has no checkout and no write access upstream, and every change still goes through the sandboxed worker, checks, review and merge | Tradeoff: a new fork has Actions off until the person turns them on, so its releases carry no binaries before that.
+
+## 2026-10-22 The source travels in the binary
+- Decision: `go:embed` of the repository; the KB rewrites `kb/hive/` at each start | Why: the lead could not say how scores or schedules work from prompts alone; reading the source at the running version needs no network | Tradeoff: a bigger binary.
