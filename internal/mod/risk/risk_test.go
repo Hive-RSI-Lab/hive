@@ -3,6 +3,7 @@ package risk
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,17 +239,24 @@ func TestWardenPassesToThePerson(t *testing.T) {
 	}
 }
 
-// A sudo step on a machine that wants a password goes to the person to run
-// themselves, whoever approved it, and nothing runs.
+// A sudo step where sudo can't run is refused when the warden says do, with
+// the reason. One a panel approves goes to the person to run themselves, and
+// nothing runs.
 func TestSudoWithPasswordGoesToThePerson(t *testing.T) {
 	defer func(f func() bool) { sudoOK = f }(sudoOK)
 	sudoOK = func() bool { return false }
 	g := newRig(t, 3)
 	req := g.request("install a system package", "apt-get install -y x", "T2")
-	if err := g.decide(req, map[string]string{"decision": "do", "reason": "fine", "script": "sudo apt-get install -y x"}); err != nil {
-		t.Fatal(err)
+	if err := g.decide(req, map[string]string{"decision": "do", "reason": "fine", "script": "sudo apt-get install -y x"}); err == nil || !strings.Contains(err.Error(), "sudo can't run here") {
+		t.Fatalf("do with sudo wasn't refused: %v", err)
 	}
-	got := g.settle(req.ID, "approved", "running")
+	g.decide(req, map[string]string{"decision": "tribunal", "reason": "unsure", "script": "sudo apt-get install -y x"})
+	req, _ = g.m.get(req.ID)
+	g.vote(req, "approve", "approve", "approve")
+	g.m.Tick()
+	req, _ = g.m.get(req.ID)
+	g.vote(req, "approve", "approve", "approve")
+	got := g.settle(req.ID, "tribunal", "approved", "running")
 	a, _ := g.c.Person.Get(got.Ask)
 	if got.State != "asked" || got.Output != "" || !strings.HasPrefix(a.Title, "Needs your password") || strings.Join(a.Options, "|") != "done|declined" {
 		t.Fatalf("%+v %+v", got, a)
@@ -522,5 +530,64 @@ func TestTribunalThatCannotStartFails(t *testing.T) {
 	}
 	if got, _ := g.m.get(req.ID); got.State != "failed" || !g.told("no tribunal") {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// Five agents in one project needing the same step make one request with one
+// warden, and each hears its one verdict; asked again within the hour, the
+// step gets that verdict back with no new warden.
+func TestSameNeedOneVerdict(t *testing.T) {
+	g := newRig(t, 3)
+	runs := []core.Run{g.worker}
+	for i := 0; i < 4; i++ {
+		r, err := g.c.Runs.Start(core.RunSpec{Role: "worker", Harness: "fake", Checkout: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, r)
+	}
+	for i, r := range runs {
+		want := "Install python3 on the host"
+		if i%2 == 1 {
+			want = "  install PYTHON3 on the   host "
+		}
+		if _, err := g.call(r, "warden", map[string]string{"want": want, "why": "tests need it", "steps": "apt-get install -y python3", "tier": "T2"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqs := g.m.List()
+	if len(reqs) != 1 || len(reqs[0].Joined) != 4 {
+		t.Fatalf("want one request joined by four, got %+v", reqs)
+	}
+	if err := g.decide(reqs[0], map[string]string{"decision": "decline", "reason": "not needed"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range runs {
+		if !eventually(func() bool {
+			p := g.run(r.ID).Pending
+			return len(p) > 0 && strings.Contains(p[len(p)-1], "not needed")
+		}) {
+			t.Fatalf("%s never heard the verdict", r.ID)
+		}
+	}
+	out, err := g.call(runs[2], "warden", map[string]string{"want": "install python3 on the host", "why": "again", "tier": "T2"})
+	if err != nil || len(g.m.List()) != 1 || !strings.Contains(fmt.Sprint(out), "not needed") {
+		t.Fatalf("asked again: %v %v, %d requests", out, err, len(g.m.List()))
+	}
+}
+
+// The warden's brief says sandboxes share the host's system directories and
+// whether sudo can run, so it doesn't decline on a sandbox image that doesn't
+// exist or approve a script that can't run.
+func TestWardenBriefCarriesSandboxFacts(t *testing.T) {
+	defer func(f func() bool) { sudoOK = f }(sudoOK)
+	sudoOK = func() bool { return false }
+	g := newRig(t, 3)
+	req := g.request("install python3", "apt-get install -y python3", "T2")
+	brief := g.run(req.Warden).Brief
+	for _, fact := range []string{"/usr, /bin, /lib, /etc", "no separate sandbox image", "sudo can't run here"} {
+		if !strings.Contains(brief, fact) {
+			t.Errorf("brief lacks %q:\n%s", fact, brief)
+		}
 	}
 }
