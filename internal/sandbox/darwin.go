@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/proc"
+	"github.com/ihsan-sa/hive-standalone-build/internal/proc"
 )
 
 // Seatbelt is the macOS sandbox: sandbox-exec with a generated profile.

@@ -17,10 +17,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/ihsan-sa/hive/internal/api"
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/mod/chat"
-	"github.com/ihsan-sa/hive/internal/mod/work"
+	"github.com/ihsan-sa/hive-standalone-build/internal/api"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
 var sections = []string{"Chats", "Dashboard", "Waiting", "Modules", "Settings"}

@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/harness"
-	"github.com/ihsan-sa/hive/internal/proc"
-	"github.com/ihsan-sa/hive/internal/sandbox"
+	"github.com/ihsan-sa/hive-standalone-build/internal/harness"
+	"github.com/ihsan-sa/hive-standalone-build/internal/proc"
+	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 )
 
 // Run statuses.

@@ -20,12 +20,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/api"
-	"github.com/ihsan-sa/hive/internal/app"
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/mod/projects"
-	"github.com/ihsan-sa/hive/internal/mod/work"
-	"github.com/ihsan-sa/hive/internal/proc"
+	"github.com/ihsan-sa/hive-standalone-build/internal/api"
+	"github.com/ihsan-sa/hive-standalone-build/internal/app"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/projects"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
+	"github.com/ihsan-sa/hive-standalone-build/internal/proc"
 )
 
 // Forge picks the forge: GitHub, or a local folder forge when HIVE_FORGE=local:<dir>.

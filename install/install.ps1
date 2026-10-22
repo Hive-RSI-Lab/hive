@@ -1,9 +1,9 @@
 # Install the Hive on Windows:
-#   irm https://raw.githubusercontent.com/ihsan-sa/hive/main/install/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/install.ps1 | iex
 # Running it again reinstalls. Agents are sandboxed inside WSL 2, so the Linux
 # build is installed next to the Windows one.
 $ErrorActionPreference = 'Stop'
-$repo = if ($env:HIVE_REPO) { $env:HIVE_REPO } else { 'ihsan-sa/hive' }
+$repo = if ($env:HIVE_REPO) { $env:HIVE_REPO } else { 'ihsan-sa/hive-standalone-build' }
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\hive'
 $base = "https://github.com/$repo/releases/latest/download"
 $tmp = Join-Path $env:TEMP ("hive-install-" + [guid]::NewGuid())

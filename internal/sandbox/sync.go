@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/proc"
+	"github.com/ihsan-sa/hive-standalone-build/internal/proc"
 )
 
 // ErrTimeout means a synchronous sandboxed command ran past its time.

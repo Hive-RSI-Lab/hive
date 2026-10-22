@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/demo"
-	"github.com/ihsan-sa/hive/internal/mod/chat"
-	"github.com/ihsan-sa/hive/internal/mod/improve"
-	"github.com/ihsan-sa/hive/internal/mod/work"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/demo"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/improve"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
 // Module is the projects module.

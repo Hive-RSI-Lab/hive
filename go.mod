@@ -1,4 +1,4 @@
-module github.com/ihsan-sa/hive
+module github.com/ihsan-sa/hive-standalone-build
 
 go 1.27.3
 

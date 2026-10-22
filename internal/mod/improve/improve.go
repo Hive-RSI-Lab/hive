@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/mod/agents"
-	"github.com/ihsan-sa/hive/internal/mod/chat"
-	"github.com/ihsan-sa/hive/internal/mod/work"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/agents"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
 // Measurement is one measure of main.

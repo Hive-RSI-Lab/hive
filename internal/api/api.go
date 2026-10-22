@@ -12,13 +12,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/harness"
-	"github.com/ihsan-sa/hive/internal/mod/chat"
-	"github.com/ihsan-sa/hive/internal/mod/improve"
-	"github.com/ihsan-sa/hive/internal/mod/risk"
-	"github.com/ihsan-sa/hive/internal/mod/system"
-	"github.com/ihsan-sa/hive/internal/mod/work"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/harness"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/improve"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/risk"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/system"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
 // DaemonInfo is .hive/daemon.json.

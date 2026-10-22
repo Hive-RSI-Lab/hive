@@ -17,7 +17,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/ihsan-sa/hive/internal/proc"
+	"github.com/ihsan-sa/hive-standalone-build/internal/proc"
 	"golang.org/x/sys/unix"
 )
 

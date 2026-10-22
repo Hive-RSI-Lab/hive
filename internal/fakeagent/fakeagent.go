@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/agentcli"
+	"github.com/ihsan-sa/hive-standalone-build/internal/agentcli"
 )
 
 // Main is `hive fake-agent --role R --session S [--resume] [--schema]`.

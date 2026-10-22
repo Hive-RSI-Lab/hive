@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/agentcli"
-	"github.com/ihsan-sa/hive/internal/api"
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/daemon"
-	"github.com/ihsan-sa/hive/internal/fakeagent"
-	"github.com/ihsan-sa/hive/internal/mod/chat"
-	"github.com/ihsan-sa/hive/internal/sandbox"
-	"github.com/ihsan-sa/hive/internal/setup"
-	"github.com/ihsan-sa/hive/internal/tui"
+	"github.com/ihsan-sa/hive-standalone-build/internal/agentcli"
+	"github.com/ihsan-sa/hive-standalone-build/internal/api"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/daemon"
+	"github.com/ihsan-sa/hive-standalone-build/internal/fakeagent"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
+	"github.com/ihsan-sa/hive-standalone-build/internal/setup"
+	"github.com/ihsan-sa/hive-standalone-build/internal/tui"
 )
 
 const usage = `hive: a small team of AI agents working on your projects.

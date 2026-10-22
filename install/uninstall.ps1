@@ -1,5 +1,5 @@
 # Uninstall the Hive (your folder, ~\hive by default, is left alone):
-#   irm https://raw.githubusercontent.com/ihsan-sa/hive/main/install/uninstall.ps1 | iex
+#   irm https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/uninstall.ps1 | iex
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\hive'
 $exe = Join-Path $dir 'hive.exe'
 if (Test-Path $exe) { & $exe uninstall }

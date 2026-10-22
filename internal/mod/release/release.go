@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/mod/modules"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/modules"
 )
 
 // Module is the release module.

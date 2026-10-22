@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/ihsan-sa/hive/internal/proc"
+	"github.com/ihsan-sa/hive-standalone-build/internal/proc"
 )
 
 // WSL runs the Linux namespace sandbox inside a WSL 2 distribution. The

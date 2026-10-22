@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/sandbox"
+	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 )
 
 // Effects is the one part of the Hive that holds credentials: the forge login

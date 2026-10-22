@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/daemon"
-	"github.com/ihsan-sa/hive/internal/mod/projects"
-	"github.com/ihsan-sa/hive/internal/sandbox"
-	"github.com/ihsan-sa/hive/internal/setup"
-	"github.com/ihsan-sa/hive/internal/tui"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/daemon"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/projects"
+	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
+	"github.com/ihsan-sa/hive-standalone-build/internal/setup"
+	"github.com/ihsan-sa/hive-standalone-build/internal/tui"
 )
 
 // firstRun takes a fresh install from nothing to a lead that answers: check

@@ -1,10 +1,10 @@
 #!/bin/sh
 # Install the Hive on Linux or macOS:
-#   curl -fsSL https://raw.githubusercontent.com/ihsan-sa/hive/main/install/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/install.sh | sh
 # Running it again reinstalls. The binary is static; no runtime is needed.
 set -eu
 
-REPO="${HIVE_REPO:-ihsan-sa/hive}"
+REPO="${HIVE_REPO:-ihsan-sa/hive-standalone-build}"
 DIR="${HIVE_BIN_DIR:-$HOME/.local/bin}"
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')

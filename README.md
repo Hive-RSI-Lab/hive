@@ -8,11 +8,11 @@ You talk to a lead in a chat. The lead turns what you say into briefs. Workers b
 
 macOS / Linux:
 
-    curl -fsSL https://raw.githubusercontent.com/ihsan-sa/hive/main/install/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/install.sh | sh
 
 Windows (PowerShell):
 
-    irm https://raw.githubusercontent.com/ihsan-sa/hive/main/install/install.ps1 | iex
+    irm https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/install.ps1 | iex
 
 Then run `hive`. It checks for git, Claude Code and the GitHub CLI, offers their own logins, asks where to live (default `~/hive`) and for a GitHub repository (blank makes a small demo project), and opens the control center with the lead's chat.
 
@@ -41,7 +41,7 @@ See [docs/architecture.md](docs/architecture.md) and [docs/risk.md](docs/risk.md
 
 ## Uninstall
 
-    curl -fsSL https://raw.githubusercontent.com/ihsan-sa/hive/main/install/uninstall.sh | sh
-    irm https://raw.githubusercontent.com/ihsan-sa/hive/main/install/uninstall.ps1 | iex
+    curl -fsSL https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/uninstall.sh | sh
+    irm https://raw.githubusercontent.com/ihsan-sa/hive-standalone-build/main/install/uninstall.ps1 | iex
 
 Your folder is left alone.

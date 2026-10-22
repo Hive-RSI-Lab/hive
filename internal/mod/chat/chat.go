@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/mod/agents"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/agents"
 )
 
 // Chat is one conversation.

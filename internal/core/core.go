@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/sandbox"
+	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 )
 
 // Version is set at build time.

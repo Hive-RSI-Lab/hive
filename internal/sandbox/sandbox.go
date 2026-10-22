@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/proc"
+	"github.com/ihsan-sa/hive-standalone-build/internal/proc"
 )
 
 // Mount exposes a host path inside the sandbox.

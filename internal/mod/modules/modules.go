@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/core"
-	defaults "github.com/ihsan-sa/hive/modules"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	defaults "github.com/ihsan-sa/hive-standalone-build/modules"
 )
 
 // Manifest is a module's own module.json.

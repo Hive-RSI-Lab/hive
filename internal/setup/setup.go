@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/core"
-	"github.com/ihsan-sa/hive/internal/sandbox"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 )
 
 // Tool is a prerequisite.

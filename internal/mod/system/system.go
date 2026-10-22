@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ihsan-sa/hive/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 )
 
 // Job is a named scheduled action provided by a module.
