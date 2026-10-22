@@ -38,6 +38,20 @@ func TestBwrapArgsKeepReach(t *testing.T) {
 	}
 }
 
+// TestForcedBwrapNeverFallsBack: with HIVE_SANDBOX_BWRAP=1 and no bwrap to
+// start, the sandbox still takes the bwrap path, so it fails instead of
+// quietly running in the build's own namespaces.
+func TestForcedBwrapNeverFallsBack(t *testing.T) {
+	t.Setenv("HIVE_SANDBOX_BWRAP", "1")
+	t.Setenv("PATH", t.TempDir())
+	if name := (Linux{}).Name(); name != "bubblewrap" {
+		t.Fatalf("forced sandbox = %q, want bubblewrap", name)
+	}
+	if err := exec.Command(bwrapPath(), "true").Run(); err == nil {
+		t.Fatal("a bwrap that isn't there started")
+	}
+}
+
 // TestNoSelfExecInTests: a test that reaches the sandbox in-process gets an
 // error, never a re-run of its own test binary. It asks hiveBinary, not
 // Probe, so that without the guard it fails rather than forking.
