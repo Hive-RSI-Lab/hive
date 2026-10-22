@@ -652,6 +652,121 @@ func TestRiskPaths(t *testing.T) {
 	}
 }
 
+// TestWaitingReachesThePerson: a root install the warden passes on reaches
+// Waiting and the lead, the person approves one and refuses the other from a
+// shell, and each worker hears the answer: the approved one lands, the
+// refused one stops.
+func TestWaitingReachesThePerson(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.seed("me/wait", map[string]string{".hive/project.json": `{"test": "true"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "wait", "repo": "me/wait"}, nil)
+	for _, title := range []string{"yes", "no"} {
+		h.post("/api/ask", map[string]string{"project": "wait", "title": title, "known": "FAKE:needpackage FAKE:wardenperson" + title}, nil)
+	}
+	req := func(st api.State, title string) (risk.Request, core.Ask, bool) {
+		for _, r := range st.Requests {
+			if strings.Contains(r.Why, "wardenperson"+title) {
+				for _, a := range st.Asks {
+					if a.ID == r.Ask {
+						return r, a, r.State == "asked"
+					}
+				}
+			}
+		}
+		return risk.Request{}, core.Ask{}, false
+	}
+	st := h.wait("both installs to wait on the person", 3*minute, func(st api.State) bool {
+		_, _, y := req(st, "yes")
+		_, _, n := req(st, "no")
+		return y && n
+	})
+	_, yes, _ := req(st, "yes")
+	_, no, _ := req(st, "no")
+	if strings.Join(yes.Options, "|") != "run|declined" || !strings.Contains(yes.Detail, "install the left-pad package") || !strings.Contains(yes.Detail, "echo apt-get install -y left-pad") {
+		t.Fatalf("Waiting doesn't say what is asked: %+v", yes)
+	}
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "Can I approve the worker installing it?"}, nil)
+	r, _, _ := req(st, "yes")
+	since, _ := json.Marshal(r.Updated)
+	h.wait("the lead to see where the request stands, since when, and how to answer", 2*minute, func(st api.State) bool {
+		return h.replied("lead", `"State":"asked","Warden":"`+r.Warden+`"`)(st) && h.replied("lead", `"Since":`+string(since))(st) && h.replied("lead", "approve "+yes.ID)(st)
+	})
+	for verb, a := range map[string]core.Ask{"approve": yes, "refuse": no} {
+		cmd := exec.Command(bin, verb, a.ID)
+		cmd.Env = append(os.Environ(), "HIVE_HOME="+h.ws.Root, "HIVE_FORGE=local:"+h.forge.Dir)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("hive %s: %v %s", verb, err, out)
+		}
+	}
+	st = h.wait("the approved install to run", 2*minute, func(st api.State) bool {
+		for _, r := range st.Requests {
+			if r.Ask == yes.ID {
+				return r.State == "done"
+			}
+		}
+		return false
+	})
+	h.wait("the approved worker to land", 3*minute, taskStage("wait", "yes", work.StageDone))
+	h.wait("the refused worker to stop", 3*minute, taskStage("wait", "no", work.StageBlocked))
+}
+
+// TestBlockedWorkComesBack replays the first real run: each worker's tests fail
+// on a missing tool, it asks a warden and finishes blocked at once. Where the
+// warden installs the tool, its answer wakes the worker and the PR merges;
+// where it declines and the person installs the tool, the lead re-runs the check.
+func TestBlockedWorkComesBack(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	dir := t.TempDir()
+	for _, name := range []string{"tool", "rerun"} {
+		marker := filepath.Join(dir, name)
+		h.seed("me/"+name, map[string]string{".hive/project.json": `{"test": "test -f ` + filepath.ToSlash(marker) + `"}`, ".hive/goals.md": "# Goals\n"})
+		h.post("/api/project", map[string]any{"name": name, "repo": "me/" + name}, nil)
+		known := "FAKE:needtool " + filepath.ToSlash(marker)
+		if name == "rerun" {
+			known += " FAKE:wardendecline"
+		}
+		h.post("/api/ask", map[string]string{"project": name, "title": name, "known": known}, nil)
+	}
+	h.wait("the warden's answer to wake the worker and its PR to merge", 4*minute, taskStage("tool", "tool", work.StageDone))
+	st := h.wait("the declined worker to stay blocked", 4*minute, func(st api.State) bool {
+		t, ok := task(st, "rerun", "rerun")
+		return ok && t.Stage == work.StageBlocked && strings.Contains(t.Reason, "declined") && t.PR.Number != 0
+	})
+	rerun, _ := task(st, "rerun", "rerun")
+	os.WriteFile(filepath.Join(dir, "rerun"), nil, 0o644) // the person installs the tool
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "recheck " + rerun.ID}, nil)
+	h.wait("the lead's re-run to pass and merge the PR", 4*minute, taskStage("rerun", "rerun", work.StageDone))
+}
+
+// TestStoppedWorkComesBack: a change whose tests keep failing stops after its
+// fix rounds and goes to the lead, not the person; the lead sends it back with
+// what remains and it merges.
+func TestStoppedWorkComesBack(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.seed("me/stop", map[string]string{".hive/project.json": `{"test": "test ! -f BROKEN"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "stop", "repo": "me/stop"}, nil)
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "hello"}, nil) // the lead is up to be told
+	title := "break the build FAKE:leadfixes"
+	h.post("/api/ask", map[string]string{"project": "stop", "title": title, "known": "FAKE:breaktests"}, nil)
+	st := h.wait("the lead's call to bring it back past the fix rounds and merge it", 6*minute, taskStage("stop", title, work.StageDone))
+	tk, _ := task(st, "stop", title)
+	stopped := false
+	for _, e := range tk.Log {
+		stopped = stopped || strings.Contains(e.Text, "stopped after 3 rounds")
+	}
+	if !stopped {
+		t.Fatalf("it never stopped after its rounds: %+v", tk.Log)
+	}
+	for _, msg := range h.messages("lead") {
+		if strings.Contains(msg.Text, "Stopped") {
+			t.Fatalf("the person was told of work the lead owns: %q", msg.Text)
+		}
+	}
+}
+
 // TestOutsideStep: an ask longer than a label reaches the worker whole, and a
 // path it names outside the checkout goes to a tribunal as a T3 step. Under
 // HIVE_E2E_SANDBOX=auto the worker can't see the path and must still file it.

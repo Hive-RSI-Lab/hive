@@ -122,10 +122,17 @@ func emit(v any) {
 }
 
 // Messages that queued during a turn arrive as one prompt, joined by core.PendingSep.
+// handedBack is a stopped task the lead is told is its own, when its title asks the fake lead to fix it.
+var handedBack = regexp.MustCompile(`Stopped "[^"]*FAKE:leadfixes[^"]*" \(task (\S+?)[ )]`)
+
 var personRe = regexp.MustCompile(`(?s)Person: (.*?)(?:` + regexp.QuoteMeta(core.PendingSep) + `|\z)`)
 var projectRe = regexp.MustCompile(`create (?:an? )?(isolated )?project (?:called |named )?([A-Za-z0-9_-]+)`)
 
 func lead(prompt string) (string, error) {
+	if m := handedBack.FindStringSubmatch(prompt); m != nil { // the lead owns stopped work; the person isn't asked
+		_, err := call("recheck", map[string]string{"task": m[1], "back": "FAKE:fixit: remove BROKEN, commit and finish"}, time.Minute)
+		return "NOOP", err
+	}
 	ms := personRe.FindAllStringSubmatch(prompt, -1)
 	if ms == nil {
 		return "NOOP", nil
@@ -158,6 +165,14 @@ func leadAsk(ask string) (string, error) {
 	}
 	if strings.Contains(strings.ToLower(ask), "what's in the repo") {
 		return "The repo has " + strings.Join(repoFiles(), ", ") + ".", nil
+	}
+	if f := strings.Fields(ask); len(f) == 2 && f[0] == "recheck" {
+		out, err := call("recheck", map[string]string{"task": f[1]}, time.Minute)
+		return "Running its checks again: " + string(out), err
+	}
+	if strings.HasPrefix(strings.ToLower(ask), "can i approve") {
+		out, err := call("requests", map[string]string{}, time.Minute)
+		return "Here's what waits: " + string(out), err
 	}
 	if strings.HasPrefix(strings.ToLower(ask), "hello") {
 		return "Hello. I'm the lead. Tell me what you'd like done.", nil
@@ -213,6 +228,27 @@ func worker(all, prompt, system string) (string, error) {
 		_, err := call("warden", map[string]string{"want": "delete " + m[1], "why": "the ask names it", "steps": "rm -rf " + m[1], "tier": "T3"}, time.Minute)
 		return "waiting for the warden", err
 	}
+	if m := needTool.FindStringSubmatch(all); m != nil { // as in the first real run: ask, then finish blocked at once
+		switch {
+		case strings.Contains(prompt, "[request ") && strings.Contains(prompt, "won't"):
+			_, err := call("finish", map[string]string{"status": "blocked", "account": "FAKE: the warden declined the tool"}, time.Minute)
+			return "blocked", err
+		case strings.Contains(prompt, "[request "):
+			_, err := call("finish", map[string]string{"status": "done", "account": "FAKE: the tool is there now"}, time.Minute)
+			return "done", err
+		case strings.Contains(prompt, "tests failed"):
+			why := "the tests need faketool " + m[0] + " " + strings.Join(riskKeys.FindAllString(all, -1), " ")
+			if _, err := call("warden", map[string]string{"want": "install faketool", "why": why, "steps": "touch " + m[1], "tier": "T2"}, time.Minute); err != nil {
+				return "", err
+			}
+			_, err := call("finish", map[string]string{"status": "blocked", "account": "FAKE: faketool is missing; asked a warden"}, time.Minute)
+			return "blocked", err
+		}
+	}
+	if strings.Contains(all, "FAKE:wardenperson") && strings.Contains(prompt, "[request ") && strings.Contains(prompt, "declined") {
+		_, err := call("finish", map[string]string{"status": "blocked", "account": "FAKE: the person declined the install"}, time.Minute)
+		return "blocked", err
+	}
 	if strings.Contains(all, "FAKE:needpackage") && !strings.Contains(prompt, "[request ") {
 		why, steps := "the brief needs it "+strings.Join(riskKeys.FindAllString(all, -1), " "), "echo installing left-pad"
 		if strings.Contains(all, "FAKE:inject") {
@@ -224,6 +260,8 @@ func worker(all, prompt, system string) (string, error) {
 	}
 	call("progress", map[string]string{"text": "making the change"}, time.Minute)
 	switch {
+	case strings.Contains(prompt, "FAKE:fixit"):
+		os.Remove("BROKEN")
 	case strings.Contains(all, "FAKE:breaktests"):
 		os.WriteFile("BROKEN", []byte("tests fail while this exists\n"), 0o644)
 	case strings.Contains(all, "FAKE:lowerscore"):
@@ -251,6 +289,9 @@ func worker(all, prompt, system string) (string, error) {
 	return "done", err
 }
 
+// needTool names the marker a project's test needs, standing in for a missing tool.
+var needTool = regexp.MustCompile(`FAKE:needtool (\S+)`)
+
 // riskKeys steer the fake warden and panel; the worker passes them on in its request.
 var riskKeys = regexp.MustCompile(`FAKE:(warden|panel)[a-z]+`)
 
@@ -269,6 +310,15 @@ func warden(all string) error {
 	}
 	if strings.Contains(all, "FAKE:wardenmoney") {
 		script = "echo buying && stripe charges create"
+	}
+	if m := needTool.FindStringSubmatch(all); m != nil {
+		script = "touch " + m[1]
+	}
+	if strings.Contains(all, "FAKE:wardendecline") {
+		d = "decline"
+	}
+	if strings.Contains(all, "FAKE:wardenperson") { // a root install it leaves to the person
+		d, script = "person", "echo apt-get install -y left-pad"
 	}
 	if _, err := call("decide", map[string]string{"decision": d, "reason": "FAKE warden: " + d, "script": script, "gain": "large"}, time.Minute); err != nil {
 		return err

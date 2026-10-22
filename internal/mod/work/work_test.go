@@ -126,3 +126,26 @@ func TestDoneProjectGone(t *testing.T) {
 		t.Fatalf("stage %q, issue open %v, log %v", task.Stage, task.IssueOpen, task.Log)
 	}
 }
+
+// A task the pipeline gives up on goes to the lead, and recheck brings it back
+// with fresh counts; a merged task can't be rechecked.
+func TestGiveUpComesBack(t *testing.T) {
+	m, _, task, _ := noCommitRig(t, 0)
+	task.Failures, task.Round, task.Reviews = 8, 3, 3
+	m.giveUp(task, "gave up after repeated errors: HTTP 503")
+	if task.Stage != StageStopped {
+		t.Fatalf("stage %q", task.Stage)
+	}
+	if err := m.Recheck(task.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := m.Get(task.ID)
+	if got.Stage != StageLanding || got.Failures+got.Round+got.Reviews != 0 || got.Reason != "" {
+		t.Fatalf("not back in the pipeline with fresh counts: %+v", got)
+	}
+	got.Stage = StageDone
+	m.save(&got, "done")
+	if err := m.Recheck(task.ID, ""); err == nil {
+		t.Fatal("a done task was rechecked")
+	}
+}

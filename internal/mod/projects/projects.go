@@ -212,10 +212,12 @@ func (m *Module) Status() map[string]any {
 			line := fmt.Sprintf("[%s] %s (%s)", t.Stage, t.Label(), t.ID)
 			if t.PR.URL != "" {
 				line += " " + t.PR.URL
+			} else if t.Stage == work.StageBlocked && t.Branch != "" {
+				line += " branch " + t.Branch
 			}
 			if !t.Terminal() {
 				st.InFlight = append(st.InFlight, line)
-			} else if i < 8 {
+			} else if i < 8 || t.Stage != work.StageDone { // blocked and stopped work stays findable
 				st.Recent = append(st.Recent, line)
 			}
 		}
@@ -223,7 +225,7 @@ func (m *Module) Status() map[string]any {
 	}
 	var waiting []string
 	for _, a := range m.C.Person.Open() {
-		waiting = append(waiting, a.Title)
+		waiting = append(waiting, fmt.Sprintf("%s (from %s; the person answers in Waiting, or %s approve|refuse %s)", a.Title, a.From, core.Cmd, a.ID))
 	}
 	return map[string]any{"projects": ps, "waiting_on_person": waiting}
 }
