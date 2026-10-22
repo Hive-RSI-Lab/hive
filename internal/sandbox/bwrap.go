@@ -17,13 +17,15 @@ import (
 // an AppArmor profile that may. There the same root, mounts, tools and egress
 // socket are handed to bwrap, which runs `hive sandbox-inner` as the command's
 // parent. WSL leaves the setting off and keeps the build's own namespaces.
-// HIVE_SANDBOX_BWRAP=1 forces bwrap (for tests).
+// HIVE_SANDBOX_BWRAP=1 forces bwrap (for tests): a missing bwrap then fails
+// to start rather than falling back to the build's own namespaces.
 func bwrapPath() string {
-	if os.Getenv("HIVE_SANDBOX_BWRAP") != "1" {
-		b, _ := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-		if strings.TrimSpace(string(b)) != "1" {
-			return ""
-		}
+	if os.Getenv("HIVE_SANDBOX_BWRAP") == "1" {
+		return "bwrap"
+	}
+	b, _ := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+	if strings.TrimSpace(string(b)) != "1" {
+		return ""
 	}
 	p, _ := exec.LookPath("bwrap")
 	return p
