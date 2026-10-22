@@ -71,11 +71,12 @@ func run(args []string) int {
 	case "sandbox-inner":
 		return sandbox.Inner(args)
 	case "sandbox-probe":
-		if err := sandbox.Probe(); err != nil {
+		sb, err := sandbox.Select(sandbox.Options{Mode: "auto"})
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Println("ok")
+		fmt.Println("ok", sb.Name())
 		return 0
 	case "daemon":
 		return cmdDaemon(args)

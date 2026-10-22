@@ -3,7 +3,6 @@
 package sandbox
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -97,7 +96,6 @@ func (s *Seatbelt) profile(sp Spec) string {
 func Exec(string) int    { fmt.Fprintln(os.Stderr, "sandbox-exec runs on Linux"); return 125 }
 func Init(string) int    { return Exec("") }
 func Inner([]string) int { return Exec("") }
-func Probe() error       { return errors.New("probe runs on Linux") }
 
 // Run runs s to completion under Seatbelt.
 func (s *Seatbelt) Run(sp Spec, timeout time.Duration) (int, error) {

@@ -46,6 +46,14 @@ jobs:
         run: |
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: probe the sandbox first
+        # Fails the job unless the hive runs a sandboxed command through bwrap here, so the
+        # suite below can't go green on bare or on the build's own namespaces.
+        run: |
+          go build -o "$RUNNER_TEMP/hive" ./cmd/hive
+          "$RUNNER_TEMP/hive" sandbox-probe | grep -x "ok bubblewrap"
+        env:
+          HIVE_SANDBOX_BWRAP: "1"
       - name: end to end under bubblewrap
         run: go test ./internal/e2e/ -timeout 30m
         env:
