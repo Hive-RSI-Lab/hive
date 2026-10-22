@@ -29,6 +29,7 @@ func (w Workspace) KB() string                 { return filepath.Join(w.Hive(), 
 func (w Workspace) ConfigPath() string         { return filepath.Join(w.Hive(), "config.json") }
 func (w Workspace) DaemonFile() string         { return filepath.Join(w.Hive(), "daemon.json") }
 func (w Workspace) Bin() string                { return filepath.Join(w.Hive(), "bin") }
+func (w Workspace) Tools() string              { return filepath.Join(w.Hive(), "tools") }
 func (w Workspace) Gates() string              { return filepath.Join(w.Hive(), "gates") }
 
 // Checkouts is where agents' own checkouts of a project live.
@@ -191,7 +192,7 @@ func ForgetWorkspace() { os.Remove(pointerFile()) }
 
 // Init creates the folder layout.
 func (w Workspace) Init() error {
-	for _, d := range []string{w.Hive(), w.Modules(), w.Projects(), w.Runs(), w.Chats(), w.KB(), w.Bin(), w.Gates()} {
+	for _, d := range []string{w.Hive(), w.Modules(), w.Projects(), w.Runs(), w.Chats(), w.KB(), w.Bin(), w.Gates(), w.Tools()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}

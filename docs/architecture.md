@@ -12,7 +12,7 @@ One Go binary, `hive`. A small core plus default modules; the daemon runs both a
 | `internal/proc` | Detached processes; liveness by pid + start time. |
 | `internal/agentcli` | `hive agent <op>`: what agents call from inside the sandbox. |
 | `internal/fakeagent` | `hive fake-agent`: scripted agent for tests and dry runs (FAKE:* keywords). |
-| `internal/mod/*` | Default modules: `agents` (prompts, spawner), `chat`, `work` (ask → merge), `improve` (measure, keep/revert, sweep), `kb`, `system` (schedules, wake-ups), `risk` (requests past the sandbox → warden, tribunal or person), `projects`, `modules` (registry, installs, updates), `release` (self-update, self-release). |
+| `internal/mod/*` | Default modules: `agents` (prompts, spawner), `chat`, `work` (ask → merge), `improve` (measure, keep/revert, sweep), `kb`, `system` (schedules, wake-ups), `risk` (requests past the sandbox → warden, tribunal or person), `projects`, `modules` (registry, installs, updates), `release` (self-update, self-release), `tools` (runtimes agents install for themselves). |
 | `internal/app` | Wires core + modules; tick loop. |
 | `internal/daemon` | `hive daemon`, control API (127.0.0.1, bearer token in `.hive/daemon.json`, 0600). |
 | `internal/api` | API types + client. |
@@ -25,13 +25,16 @@ One Go binary, `hive`. A small core plus default modules; the daemon runs both a
 
 ```
 .hive/      events.jsonl, config.json, daemon.json, chats/*.jsonl, scores/*.jsonl,
-            runs/<id>/{host,ro,box,home}, kb/ (git repo), gates/, checks/, improve/sweeps/
+            runs/<id>/{host,ro,box,home}, kb/ (git repo), gates/, checks/, improve/sweeps/,
+            tools/<python|uv|node|go>/bin (agent-installed runtimes; read-only at /hive/tools, on PATH)
 .modules/   agents, chat, kb, improve, system, + installed (each with .hive-source.json)
 projects/<name>/             host clone (effects process only)
 projects/<name>/.checkouts/  agents' own checkouts (excluded from the clone)
 ```
 
 Run dir: `host/` (turn output, prompts, stop file; never mounted), `ro/` (system prompt, brief, inputs; mounted read-only at `/hive/run`), `box/` (mailbox + notes; rw at `/hive/box`), `home/` (rw `$HOME`).
+
+Tools: `hive agent install --tool python` runs `hive tools-fetch` in a sandbox of its own that may write `.hive/tools` (network through the egress proxy; on Windows inside WSL, so the builds are Linux ones). uv, node and go come from their official downloads, checked against the official sha256 before anything is replaced; python is `uv python install`, which checks its own. The person is told after each install. `--system "<command>"` (root) becomes a person ask with that exact command.
 
 ## Data flow: one ask
 

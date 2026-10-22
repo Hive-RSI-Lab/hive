@@ -15,6 +15,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/release"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/risk"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/system"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/tools"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
@@ -52,6 +53,7 @@ func New(ws core.Workspace, forge core.Forge) (*App, error) {
 	a.KB = kb.New(c, a.Agents)
 	a.System = system.New(c)
 	a.Risk = risk.New(c, a.Mods, a.Agents)
+	tools.New(c)
 	a.Work.Steps = a.Risk.Steps
 	a.Projects = projects.New(c, a.Chat, a.Work, a.Improve)
 	a.Release = &release.Module{C: c}

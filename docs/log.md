@@ -32,3 +32,6 @@
 
 ## 2026-10-22 System prompt inline inside sandboxes, file outside
 - Decision: sandboxed turns pass `--append-system-prompt <text>`; bare Windows turns pass a file | Why: Windows argv is capped at 32k; inside the sandbox argv goes via the spec file with Linux limits, and older Claude Code builds may lack the -file flag | Tradeoff: two code paths in the Claude adapter.
+
+## 2026-10-22 Agents install their own runtimes
+- Decision: python, uv, node and go go into `.hive/tools` through `hive agent install`, with no root and no one asked; the person is told after. Agents see the folder read-only on PATH; the install runs in its own sandbox that may write it | Why: the owner's first live run sat blocked on a warden request for python, and he asked that the Hive install such things itself | Tradeoff: one version of each tool for every agent; a root install still goes to the person.

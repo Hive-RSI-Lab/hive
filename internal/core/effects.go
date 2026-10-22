@@ -382,7 +382,7 @@ func (e *Effects) runSandboxed(sb sandbox.Sandbox, id string, mounts []sandbox.M
 	home, _ := os.MkdirTemp("", "hive-check-home-")
 	defer os.RemoveAll(home)
 	homeM := sandbox.Mount{Host: home, Inside: "/hive/home", RW: true}
-	mounts = append(mounts, homeM)
+	mounts = append(mounts, homeM, sandbox.Mount{Host: e.ws.Tools(), Inside: sandbox.ToolsInside})
 	argv := []string{"/bin/sh", "-c", script}
 	env := sandbox.InsideEnv("/hive/home", network)
 	if !sb.Isolated() {

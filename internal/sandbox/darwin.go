@@ -68,7 +68,7 @@ func (s *Seatbelt) Start(sp Spec) (Proc, error) {
 		}
 		env = append(env, kv)
 	}
-	env = withPathPrefix(append(env, "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"), toolDirs(sp.Tools))
+	env = withPathPrefix(append(env, "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"), pathDirs(sp))
 	argv := append([]string{"sandbox-exec", "-f", pf}, sp.Argv...)
 	return proc.StartDetached(argv, env, sp.Cwd, sp.Stdin, sp.Stdout)
 }
@@ -106,7 +106,7 @@ func (s *Seatbelt) Run(sp Spec, timeout time.Duration) (int, error) {
 	if err := os.WriteFile(pf, []byte(s.profile(sp)), 0o600); err != nil {
 		return -1, err
 	}
-	env := withPathPrefix(append(s.env(sp), "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"), toolDirs(sp.Tools))
+	env := withPathPrefix(append(s.env(sp), "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"), pathDirs(sp))
 	return runSync(append([]string{"sandbox-exec", "-f", pf}, sp.Argv...), env, sp.Cwd, sp.Stdin, sp.Stdout, timeout)
 }
 

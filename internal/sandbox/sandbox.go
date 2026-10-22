@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -108,7 +109,7 @@ func (Bare) Check() error   { return nil }
 
 func (Bare) Start(s Spec) (Proc, error) {
 	env := append(os.Environ(), s.Env...)
-	env = withPathPrefix(env, toolDirs(s.Tools))
+	env = withPathPrefix(env, pathDirs(s))
 	return proc.StartDetached(s.Argv, env, s.Cwd, s.Stdin, s.Stdout)
 }
 
@@ -117,6 +118,35 @@ func toolDirs(tools []string) []string {
 	for _, t := range tools {
 		if filepath.IsAbs(t) {
 			dirs = append(dirs, filepath.Dir(t))
+		}
+	}
+	return dirs
+}
+
+// ToolsInside is where the Hive's tools folder is mounted: the runtimes and
+// dev tools agents install for themselves (`hive agent install`).
+const ToolsInside = "/hive/tools"
+
+// ToolNames are the tools the Hive installs. Each lives in <folder>/<name>,
+// with its programs in <folder>/<name>/bin.
+var ToolNames = []string{"python", "uv", "node", "go"}
+
+// ToolBins are the tools folder's bin dirs, for PATH.
+func ToolBins(folder string, join func(...string) string) []string {
+	var out []string
+	for _, n := range ToolNames {
+		out = append(out, join(folder, n, "bin"))
+	}
+	return out
+}
+
+// pathDirs are what a command on the host's own paths (bare, Seatbelt) gets
+// on PATH: the exposed tools' dirs and the bin dirs of a mounted tools folder.
+func pathDirs(s Spec) []string {
+	dirs := toolDirs(s.Tools)
+	for _, m := range s.Mounts {
+		if m.Inside == ToolsInside {
+			dirs = append(dirs, ToolBins(m.Host, filepath.Join)...)
 		}
 	}
 	return dirs
@@ -160,7 +190,7 @@ func ReadSpec(path string) (Spec, error) {
 func InsideEnv(home string, network bool) []string {
 	env := []string{
 		"HOME=" + home,
-		"PATH=/hive/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"PATH=/hive/bin:" + strings.Join(ToolBins(ToolsInside, path.Join), ":") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"LANG=C.UTF-8",
 		"TERM=dumb",
 		"TMPDIR=/tmp",
