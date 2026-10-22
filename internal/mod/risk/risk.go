@@ -70,6 +70,7 @@ type Seat struct {
 	Votes [2]string `json:"votes"` // approve | decline, per round
 	Why   [2]string `json:"why"`
 	Again bool      `json:"again,omitempty"` // reopened for round 2
+	Gave  bool      `json:"gave,omitempty"`  // settled as a decline after ReopenTries failed reopens
 	Fails int       `json:"fails,omitempty"` // failed reopens for round 2
 }
 
@@ -115,7 +116,9 @@ func New(c *core.Core, mod *modules.Registry, ag *agents.Agents) *Module {
 	// A warden that asks an agent ends its turn to wait for the reply, so it
 	// idles rather than going quiet, which Tick would read as failing. It
 	// waits only once the message is sent, so a failed send never leaves it
-	// waiting on a reply that won't come.
+	// waiting on a reply that won't come. The "message" op comes from core and
+	// Register replaces by name, so this must run after core registers it; a
+	// test on the app's wiring (internal/app) pins the order.
 	for _, op := range ops.List() {
 		if op.Name != "message" {
 			continue
@@ -449,7 +452,7 @@ func (m *Module) Tick() {
 				if !ok || !p.Terminal() {
 					continue
 				}
-				if req.Round == 2 && !s.Again {
+				if req.Round == 2 && !s.Again && !s.Gave {
 					err := m.reopen(s.Run, m.panelBrief(req, 2, i))
 					switch {
 					case err == nil:
@@ -457,7 +460,7 @@ func (m *Module) Tick() {
 					case s.Fails+1 < ReopenTries: // the next tick tries again
 						req.Panel[i].Fails++
 					default: // settle it rather than wait on a seat that never reopens
-						req.Panel[i].Again = true
+						req.Panel[i].Gave = true
 						req.Panel[i].Votes[1], req.Panel[i].Why[1] = "decline", "could not be reopened: "+err.Error()
 					}
 					moved = true
