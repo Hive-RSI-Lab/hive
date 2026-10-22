@@ -172,6 +172,9 @@ func leadAsk(ask, system string) (string, error) {
 	if strings.Contains(strings.ToLower(ask), "what's in the repo") {
 		return "The repo has " + strings.Join(repoFiles(), ", ") + ".", nil
 	}
+	if hiveQ.MatchString(ask) && strings.Contains(system, "look first") {
+		return aboutHive()
+	}
 	if strings.HasPrefix(strings.ToLower(ask), "hello") {
 		return "Hello. I'm the lead. Tell me what you'd like done.", nil
 	}
@@ -204,6 +207,46 @@ func leadAsk(ask, system string) (string, error) {
 		return "", err
 	}
 	return "Understood: " + clip(ask, 80) + ". I've started a piece of work on it" + where + ".", nil
+}
+
+// hiveQ is a question about the Hive itself, which a lead answers from what it reads.
+var hiveQ = regexp.MustCompile(`(?i)does the hive have`)
+
+// aboutHive answers from the installed modules and the live state, as the
+// lead's role doc tells a real lead to.
+func aboutHive() (string, error) {
+	var mods, roles []string
+	dir := os.Getenv("HIVE_MODULES")
+	jsons, _ := filepath.Glob(filepath.Join(dir, "*", "module.json"))
+	for _, f := range jsons {
+		var m struct {
+			Name     string
+			Provides struct{ Prompts []string }
+		}
+		raw, _ := os.ReadFile(f)
+		json.Unmarshal(raw, &m)
+		mods = append(mods, m.Name)
+		for _, p := range m.Provides.Prompts {
+			if p != "orientation.md" {
+				roles = append(roles, strings.TrimSuffix(p, ".md"))
+			}
+		}
+	}
+	panel := "an unknown number of"
+	tribunal, _ := os.ReadFile(filepath.Join(dir, "agents", "tribunal.md"))
+	if tm := regexp.MustCompile(`panel of (\w+)`).FindSubmatch(tribunal); tm != nil {
+		panel = string(tm[1])
+	}
+	raw, err := call("status", map[string]string{}, time.Minute)
+	if err != nil {
+		return "", err
+	}
+	var st struct {
+		Waiting []string `json:"waiting_on_person"`
+	}
+	json.Unmarshal(raw, &st)
+	return fmt.Sprintf("Yes. Installed modules: %s. Roles: %s. One warden weighs each request past an agent's reach, and a tribunal is a panel of %s. %d waiting on you. (Read from $HIVE_MODULES and hive agent status.)",
+		strings.Join(mods, ", "), strings.Join(roles, ", "), panel, len(st.Waiting)), nil
 }
 
 func projectNames() ([]string, error) {
