@@ -1,0 +1,24 @@
+ hive             │   Settings  /home/you/hive/.hive/config.json
+──────────────────┼─────────────────────────────────────────────────────────────
+   Chats          │   General
+   Dashboard      │     autonomy                    2  default
+   Waiting     3  │ ▌   sandbox                     auto
+   Modules        │     WSL distro
+ › Settings       │     auto-update                 on
+                  │     release repo                ihsan-sa/hive
+ ▾ textkit-2      │
+   lead           │   Agents
+   writer         │     harness                     claude
+   reviewer    ●  │     model                       sonnet
+ ▾ hive-web       │     reviewer model              opus
+   lead        ●  │     review rounds               3
+   worker-2       │
+   reviewer       │   Schedules
+   tribunal       │     hive.update                 every 6h
+ ▸ website        │     improve.sweep               every 12h
+                  │     kb.file                     daily 04:00
+                  │     modules.update              every 24h
+                  │
+                  │   Log in
+──────────────────┴─────────────────────────────────────────────────────────────
+ ↑↓ move   enter change   tab sidebar

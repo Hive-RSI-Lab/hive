@@ -1,7 +1,8 @@
 // Package tui is the control center: chats, the dashboard, what's waiting on
-// the person, modules and settings. A breadcrumb says where you are, Esc goes
-// one level up, everything expands and collapses level by level, and no line
-// runs off the screen. Quitting never stops anything.
+// the person, modules and settings. A sidebar picks the section or chat, a
+// chat's threads open in their own pane with the reply box under them, Esc
+// goes one level up, and no line runs off the screen. Quitting never stops
+// anything.
 package tui
 
 import (
@@ -12,10 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/api"
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
@@ -31,18 +33,6 @@ const (
 	secWaiting
 	secModules
 	secSettings
-)
-
-var (
-	stTitle  = lipgloss.NewStyle().Bold(true)
-	stDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	stSel    = lipgloss.NewStyle().Reverse(true)
-	stTab    = lipgloss.NewStyle().Padding(0, 1)
-	stTabOn  = lipgloss.NewStyle().Padding(0, 1).Bold(true).Underline(true)
-	stGood   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	stBad    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	stWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	stAccent = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 )
 
 // detail is one level pushed on top of a section (a run's log, a task, an ask...).
@@ -68,18 +58,34 @@ type model struct {
 	flash   string
 	flashAt time.Time
 
+	side  int // sidebar cursor
+	focus int // 0 sidebar, 1 main pane, 2 thread pane
+
 	// chats
-	chatSel   int
-	chatFocus int // 0 list, 1 threads
-	threadSel int
+	chat      string // open chat
+	thread    string // thread open in its pane; "" = none
+	threadSel int    // channel cursor; -1 = none
+	chScroll  int
+	thScroll  int
 	open      map[string]bool // expanded threads and tree nodes
 	closed    map[string]bool // collapsed project groups
 	msgs      map[string][]chat.Message
-	input     textinput.Model
-	composing bool
-	reply     string // thread being replied to; "" = new thread
+	input     textarea.Model
+	composing bool              // keys go to the text box
+	sent      int               // messages sent, to match answers
+	reply     string            // thread being replied to; "" = new thread
+	drafts    map[string]string // by chat and target
+	outbox    []outMsg          // sent, not yet answered
 
-	// dashboard and lists
+	// dashboard: the live feed, or the status tree
+	feed     []feedRow
+	feedSeq  int64
+	feedSel  int
+	follow   string // a project, or "" for everyone
+	onlyMe   bool
+	dashTree bool
+	stages   map[string]string // task stages seen, so the feed shows changes
+
 	dashSel int
 	waitSel int
 	modSel  int
@@ -109,20 +115,47 @@ type sinceMsg []string
 type flashMsg string
 type tickMsg time.Time
 
+type outMsg struct {
+	n                  int
+	chat, thread, text string
+}
+type sentMsg struct {
+	out outMsg
+	msg chat.Message
+	err error
+}
+
 // Run opens the control center.
 func Run(c *api.Client, ws core.Workspace) error {
-	in := textinput.New()
-	in.Placeholder = "write to the lead…"
-	in.Prompt = "› "
-	in.CharLimit = 8000
-	m := &model{c: c, ws: ws, open: map[string]bool{}, closed: map[string]bool{}, msgs: map[string][]chat.Message{},
-		runs: map[string]api.RunDetail{}, tasks: map[string]work.Task{}, input: in}
-	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	if os.Getenv("NO_COLOR") != "" { // NO_COLOR drops hue, not bold, faint and reverse
+		lipgloss.SetColorProfile(termenv.ANSI)
+		stBad = stTitle
+	}
+	_, err := tea.NewProgram(newModel(c, ws), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
 
+func newModel(c *api.Client, ws core.Workspace) *model {
+	in := textarea.New()
+	in.ShowLineNumbers, in.Prompt, in.CharLimit = false, "", 8000
+	in.SetPromptFunc(2, func(i int) string {
+		if i == 0 {
+			return "› "
+		}
+		return "  "
+	})
+	in.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	in.FocusedStyle.Placeholder, in.BlurredStyle.Placeholder = stDim, stDim
+	in.KeyMap.InsertNewline.SetKeys("ctrl+j", "alt+enter")
+	return &model{c: c, ws: ws, open: map[string]bool{}, closed: map[string]bool{}, msgs: map[string][]chat.Message{},
+		runs: map[string]api.RunDetail{}, tasks: map[string]work.Task{}, drafts: map[string]string{}, stages: map[string]string{}, input: in, threadSel: -1, feedSel: -1}
+}
+
+// sidePane: a pane is open beside the main one.
+func (m *model) sidePane() bool { return m.section == secChats && m.thread != "" }
+
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(m.fetchState(), m.fetchSince(), tick())
+	return tea.Batch(m.fetchState(), m.fetchSince(), m.fetchFeed(), tick())
 }
 
 func tick() tea.Cmd {
@@ -250,15 +283,55 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-		m.input.Width = max(10, m.w-6)
+	case tea.MouseMsg:
+		if s := msg.String(); s == "wheelup" || s == "wheeldown" {
+			if m.focus == 2 {
+				m.thScroll = scroll(m.thScroll, s, m.h-4)
+			} else {
+				m.chScroll = scroll(m.chScroll, s, m.h-4)
+			}
+		}
+	case sentMsg:
+		for i, o := range m.outbox {
+			if o.n == msg.out.n {
+				m.outbox = append(m.outbox[:i], m.outbox[i+1:]...)
+				break
+			}
+		}
+		if msg.err != nil { // the text goes back in the box, unless it holds a new one
+			k := msg.out.chat + "\x00" + msg.out.thread
+			if m.composing && m.chat+"\x00"+m.reply == k && m.input.Value() == "" {
+				m.input.SetValue(msg.out.text)
+			} else if !m.composing || m.chat+"\x00"+m.reply != k {
+				m.drafts[k] = msg.out.text
+			}
+			m.setFlash("✗ not sent · " + msg.err.Error())
+			return m, nil
+		}
+		m.msgs[msg.out.chat] = append(m.msgs[msg.out.chat], msg.msg)
+		if msg.out.thread == "" && m.chat == msg.out.chat { // a new thread opens in its pane
+			m.thread, m.focus, m.threadSel = msg.msg.Thread, 2, -1
+			if m.thread == "" {
+				m.thread = msg.msg.ID
+			}
+			return m, m.focusBox(m.thread)
+		}
 	case tickMsg:
-		return m, tea.Batch(m.fetchState(), m.fetchChat(m.currentChatID()), m.fetchDetail(), tick())
+		return m, tea.Batch(m.fetchState(), m.fetchChat(m.currentChatID()), m.fetchDetail(), m.fetchFeed(), tick())
 	case stateMsg:
 		if msg.err != nil {
 			m.err = "the Hive isn't answering: " + msg.err.Error()
 		} else {
+			first := !m.loaded
 			m.err, m.st, m.loaded = "", msg.st, true
+			for _, c := range m.st.Chats {
+				if first && m.chat == "" && c.Kind == "lead" { // open on the Hive's lead, ready to type
+					return m, m.openChat(c.ID)
+				}
+			}
 		}
+	case feedMsg:
+		return m, m.addEvents(msg)
 	case chatMsg:
 		m.msgs[msg.id] = msg.msgs
 	case runMsg:
@@ -291,7 +364,13 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = false
 		return m, nil
 	}
-	if m.composing || m.editing {
+	if m.editing {
+		return m.keyInput(k)
+	}
+	if s == "tab" || s == "shift+tab" {
+		return m, m.cycle(s == "tab")
+	}
+	if m.composing {
 		return m.keyInput(k)
 	}
 	switch s {
@@ -301,11 +380,12 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.help = true
 		return m, nil
-	case "tab":
-		m.section, m.stack = (m.section+1)%len(sections), nil
-		return m, nil
-	case "shift+tab":
-		m.section, m.stack = (m.section+len(sections)-1)%len(sections), nil
+	}
+	if m.focus == 0 {
+		return m.keySidebar(k)
+	}
+	if s == "esc" && len(m.stack) == 0 && m.section != secChats { // one level up is the sidebar
+		m.focus = 0
 		return m, nil
 	}
 	if len(m.stack) > 0 {
@@ -313,7 +393,7 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch m.section {
 	case secChats:
-		return m.keyChats(k)
+		return m.keyChannel(k)
 	case secDash:
 		return m.keyDash(k)
 	case secWaiting:
@@ -324,6 +404,37 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keySettings(k)
 	}
 	return m, nil
+}
+
+// cycle moves focus sidebar → main → thread pane and round.
+func (m *model) cycle(fwd bool) tea.Cmd {
+	order := []int{0, 1}
+	switch {
+	case m.takeover():
+		return nil
+	case m.sidePane():
+		order = append(order, 2)
+	}
+	i := 0
+	for j, f := range order {
+		if f == m.focus {
+			i = j
+		}
+	}
+	if fwd {
+		i++
+	} else {
+		i += len(order) - 1
+	}
+	m.blurBox()
+	m.focus = order[i%len(order)]
+	switch m.focus {
+	case 1:
+		return m.markRead()
+	case 2:
+		return m.focusBox(m.thread)
+	}
+	return nil
 }
 
 func (m *model) push(d detail) tea.Cmd {
@@ -359,36 +470,61 @@ func (m *model) keyDetail(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch k.String() {
+	switch s := k.String(); s {
 	case "esc":
-		m.composing, m.editing = false, false
-		m.input.Blur()
+		if m.editing {
+			m.editing = false
+			m.input.Blur()
+			m.input.SetValue("")
+			return m, nil
+		}
+		m.blurBox()
+		if m.reply != "" { // close the thread
+			m.thread, m.focus, m.thScroll = "", 1, 0
+		}
 		return m, nil
+	case "up":
+		if !m.editing && m.reply == "" && m.input.Value() == "" { // pick a thread
+			m.blurBox()
+			m.threadSel = len(threads(m.msgs[m.chat])) - 1
+			return m, nil
+		}
+	case "pgup", "pgdown":
+		if m.reply != "" {
+			m.thScroll = scroll(m.thScroll, s, m.h-4)
+			return m, nil
+		}
 	case "enter":
 		text := strings.TrimSpace(m.input.Value())
 		m.input.SetValue("")
-		m.input.Blur()
 		if m.editing {
 			m.editing = false
+			m.input.Blur()
 			return m, m.saveSetting(text)
 		}
-		m.composing = false
 		if text == "" {
 			return m, nil
 		}
-		id := m.currentChatID()
-		reply := m.reply
-		return m, func() tea.Msg {
-			var msg chat.Message
-			if err := m.c.Do("POST", "/api/chat", map[string]string{"chat": id, "thread": reply, "text": text}, &msg); err != nil {
-				return flashMsg("error: " + err.Error())
-			}
-			return flashMsg("sent")
-		}
+		return m, m.send(text)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
 	return m, cmd
+}
+
+// send posts at once; a reply shows as sending until the Hive answers.
+func (m *model) send(text string) tea.Cmd {
+	m.sent++
+	o := outMsg{n: m.sent, chat: m.chat, thread: m.reply, text: text}
+	m.drafts[o.chat+"\x00"+o.thread] = ""
+	if o.thread != "" {
+		m.outbox = append(m.outbox, o)
+	}
+	return func() tea.Msg {
+		var msg chat.Message
+		err := m.c.Do("POST", "/api/chat", map[string]string{"chat": o.chat, "thread": o.thread, "text": text}, &msg)
+		return sentMsg{o, msg, err}
+	}
 }
 
 func (m *model) bodyHeight() int { return max(3, m.h-4) }
@@ -397,52 +533,38 @@ func (m *model) View() string {
 	if m.w == 0 {
 		return ""
 	}
-	var b strings.Builder
-	// breadcrumb
-	crumbs := []string{"Hive", sections[m.section]}
-	if m.section == secChats {
-		if c, ok := m.currentChat(); ok && m.chatFocus == 1 {
-			crumbs = append(crumbs, c.Title)
-		}
+	sw, mw, tw := m.layout()
+	ps := []pane{m.viewSidebar(sw), m.viewMain(mw)}
+	if m.takeover() {
+		ps = []pane{m.viewThread(m.w)}
+	} else if tw > 0 {
+		ps = append(ps, m.viewThread(tw))
 	}
-	for _, d := range m.stack {
-		crumbs = append(crumbs, d.title)
-	}
-	b.WriteString(clip(stTitle.Render(strings.Join(crumbs, " › ")), m.w) + "\n")
-	var tabs []string
-	for i, name := range sections {
-		label := name
-		if i == secWaiting && len(m.st.Asks) > 0 {
-			label = fmt.Sprintf("%s (%d)", name, len(m.st.Asks))
-		}
-		if i == secChats && m.unreadTotal() > 0 {
-			label += " ●"
-		}
-		if i == m.section {
-			tabs = append(tabs, stTabOn.Render(label))
-		} else {
-			tabs = append(tabs, stTab.Render(label))
-		}
-	}
-	b.WriteString(clip(strings.Join(tabs, ""), m.w) + "\n")
+	return m.frame(ps, m.hintLine())
+}
 
+func (m *model) viewMain(w int) pane {
+	title := sections[m.section]
 	var body []string
 	switch {
 	case !m.loaded && m.err == "":
-		body = []string{"", "  connecting to the Hive…"}
+		body = []string{"", "connecting to the Hive…"}
 	case m.showSince:
-		body = append([]string{"", stTitle.Render("  While you were away"), ""}, indent(m.since, "  ")...)
-		body = append(body, "", stDim.Render("  any key to continue"))
+		body = append([]string{"", stTitle.Render("While you were away"), ""}, m.since...)
+		body = append(body, "", stDim.Render("any key to continue"))
 	case m.help:
 		body = helpLines()
+	case m.section == secChats:
+		return m.viewChannel(w)
 	case len(m.stack) > 0:
+		for _, d := range m.stack {
+			title += " › " + d.title
+		}
 		body = m.viewDetail(&m.stack[len(m.stack)-1])
 	default:
 		switch m.section {
-		case secChats:
-			body = m.viewChats()
 		case secDash:
-			body = m.viewDash()
+			body = m.viewFeed()
 		case secWaiting:
 			body = m.viewWaiting()
 		case secModules:
@@ -451,70 +573,102 @@ func (m *model) View() string {
 			body = m.viewSettings()
 		}
 	}
-	h := m.bodyHeight()
-	for len(body) < h {
-		body = append(body, "")
+	note, right := "", ""
+	switch {
+	case len(m.stack) > 0 || m.help || m.showSince:
+	case m.section == secWaiting && len(m.st.Asks) > 0:
+		note, right = fmt.Sprintf("%d need you", len(m.st.Asks)), "oldest first"
+	case m.section == secDash && m.dashTree:
+		title += " › status"
+	case m.section == secDash:
+		note, right = "live · all projects", "following everyone"
+		if m.follow != "" {
+			note, right = "live", "following "+m.follow+"   F clear"
+		}
+		if m.onlyMe {
+			right = "only you   F clear"
+		}
+	case m.section == secModules:
+		on := 0
+		for _, mod := range m.st.Modules {
+			if len(mod.Projects) > 0 {
+				on++
+			}
+		}
+		note = fmt.Sprintf("%d installed · %d on", len(m.st.Modules), on)
+	case m.section == secSettings:
+		note = filepath.Join(m.st.Workspace, ".hive", "config.json")
 	}
-	for _, l := range body[:h] {
-		b.WriteString(clip(l, m.w) + "\n")
+	if m.focus == 1 {
+		title = stTitle.Render(title)
 	}
-	foot := m.footer()
-	if m.err != "" {
-		foot = stBad.Render(m.err)
-	} else if m.flash != "" && time.Since(m.flashAt) < 4*time.Second {
-		foot = stAccent.Render(m.flash) + "  " + stDim.Render(foot)
-	}
-	b.WriteString(clip(foot, m.w))
-	return b.String()
+	return pane{w: w, head: head(w, title, note, right), body: indent(body, " ")}
 }
 
-func (m *model) footer() string {
-	if m.composing || m.editing {
-		return "enter send · esc cancel"
+func (m *model) mainW() int {
+	_, w, _ := m.layout()
+	return w
+}
+
+func (m *model) hintLine() string {
+	if m.err != "" {
+		return " " + stBad.Render(m.err)
 	}
-	if len(m.stack) > 0 && m.stack[len(m.stack)-1].kind == "module" {
-		return "↑↓ project · space grant or remove · esc back · q quit"
-	}
-	if len(m.stack) > 0 {
-		return "↑↓ scroll · esc back · tab section · q quit (the Hive keeps running)"
-	}
-	switch m.section {
-	case secChats:
-		if m.chatFocus == 0 {
-			return "↑↓ chat · type or enter to write · → threads · space collapse · tab section · q quit"
+	if m.flash != "" && time.Since(m.flashAt) < 4*time.Second {
+		if strings.HasPrefix(m.flash, "✗") || strings.HasPrefix(m.flash, "error") {
+			return " " + stBad.Render(m.flash)
 		}
-		return "↑↓ thread · enter expand · r reply · n new · ← chats · q quit"
-	case secDash:
-		return "↑↓ move · → or enter open · ← collapse · tab section · q quit"
-	case secWaiting:
-		return "↑↓ item · ←→ option · enter answer · q quit"
-	case secModules:
-		return "↑↓ module · enter details · q quit"
-	case secSettings:
-		return "↑↓ setting · enter change · q quit"
+		return " " + stDim.Render(m.flash)
 	}
-	return ""
+	return hints(m.w, m.keys()...)
+}
+
+// keys are the hint line's "key label" pairs for where the focus is.
+func (m *model) keys() []string {
+	switch {
+	case m.showSince || m.help:
+		return []string{"any key", "close"}
+	case m.editing:
+		return []string{"enter", "save", "esc", "cancel"}
+	case m.focus == 0:
+		return []string{"↑↓", "move", "enter", "open", "space", "collapse", "tab", "switch pane", "q", "quit"}
+	case m.section == secChats && m.takeover():
+		return []string{"enter", "send", "ctrl+j", "newline", "esc", "back to chat"}
+	case m.section == secChats && m.focus == 2:
+		return []string{"enter", "send", "ctrl+j", "newline", "esc", "close thread", "tab", "switch pane", "pgup pgdn", "scroll"}
+	case m.section == secChats && m.composing:
+		return []string{"enter", "start thread", "ctrl+j", "newline", "esc", "leave box", "↑", "pick a thread", "tab", "switch pane"}
+	case m.section == secChats:
+		return []string{"↑↓", "thread", "enter", "open", "n", "new thread", "space", "collapse", "tab", "pane"}
+	case len(m.stack) > 0 && m.stack[len(m.stack)-1].kind == "module":
+		return []string{"↑↓", "project", "space", "grant or remove", "esc", "back", "q", "quit"}
+	case len(m.stack) > 0:
+		return []string{"↑↓", "scroll", "esc", "back", "tab", "sidebar", "q", "quit"}
+	case m.section == secDash:
+		if m.dashTree {
+			return []string{"↑↓", "move", "enter", "open", "←", "collapse", "s", "feed", "tab", "sidebar"}
+		}
+		return []string{"enter", "open thread", "f", "follow", "m", "only me", "s", "status", "tab", "sidebar"}
+	case m.section == secWaiting:
+		return []string{"↑↓", "move", "←→", "pick", "enter", "answer", "tab", "sidebar"}
+	case m.section == secModules:
+		return []string{"enter", "configure", "↑↓", "move", "tab", "sidebar"}
+	}
+	return []string{"↑↓", "move", "enter", "change", "tab", "sidebar"}
 }
 
 func helpLines() []string {
-	return []string{"", stTitle.Render("  Keys"), "",
-		"  tab / shift+tab   switch section",
-		"  ↑ ↓               move",
-		"  → or enter        go deeper, open, expand",
-		"  ← or esc          one level up",
-		"  space             expand or collapse",
-		"  typing            in Chats, starts a message to the selected chat",
-		"  r / n             reply in a thread / new thread",
-		"  q                 quit the control center; the Hive keeps working",
-		"", stDim.Render("  any key to close")}
-}
-
-func (m *model) unreadTotal() int {
-	n := 0
-	for _, c := range m.st.Chats {
-		n += c.Unread
-	}
-	return n
+	return []string{"", stTitle.Render("Keys"), "",
+		"tab / shift+tab   switch pane: sidebar, main, thread",
+		"↑ ↓               move",
+		"enter             open; in a box, send",
+		"esc               leave a box, close a thread, one level up",
+		"space             expand or collapse",
+		"n                 new thread; typing in a chat starts one too",
+		"ctrl+j            new line in a box",
+		"pgup pgdn, wheel  scroll",
+		"q                 quit the control center; the Hive keeps working",
+		"", stDim.Render("any key to close")}
 }
 
 // clip keeps a line within the screen width.

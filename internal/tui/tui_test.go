@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
@@ -47,8 +46,7 @@ func sample() api.State {
 }
 
 func testModel(w, h int) *model {
-	m := &model{open: map[string]bool{}, closed: map[string]bool{}, msgs: map[string][]chat.Message{},
-		runs: map[string]api.RunDetail{}, tasks: map[string]work.Task{}, input: textinput.New()}
+	m := newModel(nil, core.Workspace{})
 	m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	m.Update(stateMsg{st: sample()})
 	now := time.Now()
