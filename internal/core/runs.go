@@ -67,6 +67,7 @@ type Run struct {
 	Turn        int             `json:"turn"`
 	Proc        proc.Handle     `json:"proc"`
 	Cost        float64         `json:"cost"`
+	Context     int             `json:"context,omitempty"` // tokens in its session at its last reply
 	Result      string          `json:"result,omitempty"`
 	Structured  json.RawMessage `json:"structured,omitempty"`
 	Finish      *Finish         `json:"finish,omitempty"`
@@ -156,6 +157,7 @@ type turnEnded struct {
 	ID          string          `json:"id"`
 	Turn        int             `json:"turn"`
 	SessionLive bool            `json:"session_live"`
+	Context     int             `json:"context,omitempty"`
 	Result      *harness.Result `json:"result,omitempty"`
 	Status      string          `json:"status"`
 	Reason      string          `json:"reason,omitempty"`
@@ -217,6 +219,9 @@ func (rs *Runs) apply(e Event) {
 		r.SessionLive = r.SessionLive || t.SessionLive
 		r.Status, r.Reason, r.ParkedUntil = t.Status, t.Reason, t.ParkedUntil
 		r.Proc = proc.Handle{}
+		if t.Context > 0 {
+			r.Context = t.Context
+		}
 		if t.Result != nil {
 			r.Cost += t.Result.CostUSD
 			rs.spent[e.At.UTC().Format("2006-01")] += t.Result.CostUSD
@@ -487,6 +492,7 @@ func (rs *Runs) watch(r Run) {
 // TurnLog parses a turn's output file.
 type TurnLog struct {
 	SessionLive bool
+	Context     int
 	Result      *harness.Result
 	Limit       *harness.RateLimit
 	Steps       []harness.Event
@@ -505,6 +511,8 @@ func (rs *Runs) ReadTurn(r Run, turn int) TurnLog {
 				tl.Result = ev.Result
 			case "ratelimit":
 				tl.Limit = ev.RateLimit
+			case "context":
+				tl.Context = ev.Tokens
 			}
 			if ev.Kind == "text" || ev.Kind == "tool" {
 				tl.Steps = append(tl.Steps, ev)
@@ -519,7 +527,7 @@ func (rs *Runs) endTurn(r Run) {
 	if tl.Limit != nil {
 		rs.append("plan.usage", Plan{Harness: r.Harness, Limit: *tl.Limit, At: time.Now().UTC()})
 	}
-	te := turnEnded{ID: r.ID, Turn: r.Turn, SessionLive: tl.SessionLive, Result: tl.Result}
+	te := turnEnded{ID: r.ID, Turn: r.Turn, SessionLive: tl.SessionLive, Context: tl.Context, Result: tl.Result}
 	cur, _ := rs.Get(r.ID)
 	limited := tl.Result != nil && tl.Result.Limited || (tl.Limit != nil && tl.Limit.Status == "rejected" && (tl.Result == nil || tl.Result.IsError))
 	switch {

@@ -103,6 +103,7 @@ func Main(argv []string) int {
 	if err != nil {
 		text = "error: " + err.Error()
 	}
+	emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{}, "usage": map[string]int{"input_tokens": len(all)}}})
 	res := map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": text, "session_id": session, "total_cost_usd": 0.0}
 	if schema && structured != nil {
 		res["structured_output"] = structured
@@ -158,6 +159,17 @@ func leadAsk(ask string) (string, error) {
 	}
 	if strings.Contains(strings.ToLower(ask), "what's in the repo") {
 		return "The repo has " + strings.Join(repoFiles(), ", ") + ".", nil
+	}
+	// The journal: "remember X" is written to it, "what did I ask you to
+	// remember" is answered from it, so a lead that replaced this one can too.
+	journal := filepath.Join(os.Getenv("HIVE_BOX"), "notes.md")
+	if x, ok := strings.CutPrefix(ask, "remember "); ok {
+		appendFile(journal, "- promised: "+x+"\n")
+		return "Noted.", nil
+	}
+	if strings.Contains(ask, "you to remember") {
+		notes, _ := os.ReadFile(journal)
+		return "From my journal: " + strings.TrimSpace(string(notes)), nil
 	}
 	if strings.HasPrefix(strings.ToLower(ask), "hello") {
 		return "Hello. I'm the lead. Tell me what you'd like done.", nil

@@ -229,7 +229,7 @@ func (m *model) runLine(r core.Run) string {
 	if r.Reason != "" && r.Status != core.StatusRunning {
 		extra = r.Reason
 	}
-	return fmt.Sprintf("%s  %s  turn %d  $%.2f  %s  %s", runLabel(r), status, r.Turn, r.Cost, stDim.Render(core.Clip(extra, 70)), stDim.Render(ago(r.Updated)))
+	return fmt.Sprintf("%s  %s  turn %d  $%.2f  %dk ctx  %s  %s", runLabel(r), status, r.Turn, r.Cost, r.Context/1000, stDim.Render(core.Clip(extra, 70)), stDim.Render(ago(r.Updated)))
 }
 
 // spark draws the last scores as a one-line chart.
@@ -417,7 +417,7 @@ func (m *model) viewDetail(d *detail) []string {
 		kv("status", r.Status+"  "+r.Reason)
 		kv("project", r.Project+"  task "+r.Task)
 		kv("model", r.Harness+" "+r.Model)
-		kv("turns", fmt.Sprintf("%d  cost $%.2f  started %s", r.Turn, r.Cost, r.Created.Local().Format("Mon 15:04")))
+		kv("turns", fmt.Sprintf("%d  cost $%.2f  context %dk tokens  started %s", r.Turn, r.Cost, r.Context/1000, r.Created.Local().Format("Mon 15:04")))
 		if r.Progress != "" {
 			kv("progress", r.Progress+"  "+ago(r.ProgressAt))
 		}

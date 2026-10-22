@@ -35,7 +35,7 @@ Run dir: `host/` (turn output, prompts, stop file; never mounted), `ro/` (system
 
 ## Data flow: one ask
 
-1. Person → chat → lead run (persistent Claude session, resumed per message).
+1. Person → chat → lead run (persistent Claude session, resumed per message; Claude Code compacts it when full, and the lead keeps its journal in its box `notes.md`, which a replacing lead inherits).
 2. Lead → `hive agent brief` → `task.saved` (stage `new`).
 3. work.Tick: issue (idempotent by body marker) → worker run `w-<task>` in a fresh checkout at main → worker `finish`.
 4. Effects.Extract: `git bundle` made **inside the sandbox**, fetched into the host clone with fsck, must descend from the recorded base → push `hive/<task>` → PR (idempotent by head branch).
