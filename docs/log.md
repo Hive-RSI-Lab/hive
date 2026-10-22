@@ -1,0 +1,28 @@
+# Decision log
+
+## 2026-10-22 Go, one static binary
+- Decision: Go 1.27, single binary for CLI, daemon, sandbox launcher and in-sandbox agent client | Why: no runtime to ship, one-line install, cross-compiles | Tradeoff: no first-party Claude Agent SDK in Go; drive `claude -p --output-format stream-json` instead.
+
+## 2026-10-22 Agents run as Claude Code print-mode sessions, resumed per turn
+- Decision: each agent is a session id; a turn is one `claude -p --resume`; messages queue until the turn ends | Why: survives daemon restarts (output to files, processes detached, reattach by pid + start time); no long-lived pipes | Tradeoff: messages reach a busy agent at turn end (or via `hive agent inbox`).
+
+## 2026-10-22 In-house Linux sandbox instead of bwrap
+- Decision: namespaces built by the hive binary; egress through a host proxy that refuses local/private addresses | Why: no root, no packages (WSL Ubuntu had no bwrap, no sudo), and "no way to local services" needs filtering a plain shared netns can't give | Tradeoff: more code in `internal/sandbox`; macOS uses Seatbelt (untested).
+
+## 2026-10-22 Commits leave checkouts as bundles made inside the sandbox
+- Decision: `git bundle` runs sandboxed; host fetches with fsck, verifies descent from the recorded base | Why: an agent controls its `.git` (gitfile redirects, hooks, fsmonitor); host git never runs there | Tradeoff: an extra sandboxed step per landing.
+
+## 2026-10-22 Checks use main's project.json; score/goals/settings are protected
+- Decision: test/score commands come from main, not the PR; changes to `.hive/project.json`, `.hive/goals.md` and declared `protected` paths need the person | Why: a change must not rewrite the check it's judged by | Tradeoff: bootstrapping a project's score needs one person approval.
+
+## 2026-10-22 Risk module ships as a relay to the person
+- Decision: no path runs an agent's request outside the sandbox; requests go to the Waiting queue; module installs are a fixed clone on approval | Why: two attempts at warden/tribunal host execution were stopped by a safety check; owner chose to build the rest and implement the warden/tribunal module themselves | Tradeoff: milestone 6 becomes "requests reach the person"; design kept in docs/risk.md.
+
+## 2026-10-22 Squash merges, best-kept comparison
+- Decision: squash merge pinned with `--match-head-commit`; measure each merge sha; compare with best kept score; revert via host-made commit + lessons line | Why: one commit per change makes reverts exact; best-kept stops drift under tolerance | Tradeoff: per-commit history of a branch isn't kept on main.
+
+## 2026-10-22 Small = docs only
+- Decision: no reviewer for docs-only changes ≤40 lines without protected paths; everything else is read | Why: comment-only detection in code is unreliable; conservative is safe | Tradeoff: a code typo fix still gets a review.
+
+## 2026-10-22 System prompt inline inside sandboxes, file outside
+- Decision: sandboxed turns pass `--append-system-prompt <text>`; bare Windows turns pass a file | Why: Windows argv is capped at 32k; inside the sandbox argv goes via the spec file with Linux limits, and older Claude Code builds may lack the -file flag | Tradeoff: two code paths in the Claude adapter.

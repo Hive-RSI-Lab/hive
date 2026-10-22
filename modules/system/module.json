@@ -1,0 +1,6 @@
+{
+  "name": "system",
+  "description": "Schedules and wake-ups: when sweeps, knowledge filing, module updates and Hive updates run, and agents' own scheduled wake-ups.",
+  "provides": {"schedules": ["modules.update", "hive.update"]},
+  "projects": ["*"]
+}

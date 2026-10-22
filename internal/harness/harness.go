@@ -1,0 +1,242 @@
+// Package harness is the adapter seam between the core and a coding harness
+// (Claude Code today; Codex is the first to add). A harness turns a Turn into
+// a command line and turns its output stream into Events.
+package harness
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Turn is one invocation of an agent session.
+type Turn struct {
+	Role       string
+	SessionID  string
+	Resume     bool   // continue SessionID instead of starting it
+	SystemFile string // appended system prompt, as a path the agent process sees
+	SystemText string // the same prompt inline (used inside sandboxes, where argv has room)
+	Model      string
+	ReadOnly   bool     // no write or exec tools at all (reviewer, tribunal)
+	Tools      []string // explicit tool list; nil means the harness default
+	Schema     string   // JSON schema for a structured final answer
+	Sandboxed  bool     // inside a Hive sandbox (permission prompts are meaningless there)
+}
+
+// Event is a normalized line of harness output.
+type Event struct {
+	Kind      string // init, text, tool, result, ratelimit
+	SessionID string
+	Model     string
+	Text      string
+	Tool      string
+	Result    *Result
+	RateLimit *RateLimit
+}
+
+// Result ends a turn.
+type Result struct {
+	Text       string          `json:"text"`
+	IsError    bool            `json:"is_error"`
+	Subtype    string          `json:"subtype"`
+	CostUSD    float64         `json:"cost_usd"`
+	Structured json.RawMessage `json:"structured,omitempty"`
+	APIStatus  int             `json:"api_status,omitempty"`
+	Limited    bool            `json:"limited,omitempty"`
+}
+
+// RateLimit is the plan's usage state as the harness reports it.
+type RateLimit struct {
+	Status      string            `json:"status"` // allowed, allowed_warning, rejected
+	ResetsAt    time.Time         `json:"resets_at"`
+	Window      string            `json:"window"`
+	Utilization float64           `json:"utilization"`
+	Windows     map[string]Window `json:"windows,omitempty"`
+}
+
+// Window is one usage window (five_hour, seven_day).
+type Window struct {
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resets_at"`
+}
+
+// Harness builds commands and parses output.
+type Harness interface {
+	Name() string
+	// Program is the executable name looked up on PATH (inside the sandbox if sandboxed).
+	Program() string
+	Args(t Turn) []string
+	Env(t Turn) []string
+	Parse(line []byte) []Event
+	// LoginCommand is the harness's own login, run in the person's terminal.
+	LoginCommand() []string
+}
+
+// Get returns a harness by name.
+func Get(name string) (Harness, error) {
+	switch name {
+	case "", "claude", "claude-code":
+		return Claude{}, nil
+	case "fake":
+		return Fake{}, nil
+	case "codex":
+		return nil, fmt.Errorf("harness codex: the adapter seam exists but Codex is not in v1")
+	}
+	return nil, fmt.Errorf("unknown harness %q", name)
+}
+
+// Claude is Claude Code in print mode with stream-json output.
+type Claude struct{}
+
+func (Claude) Name() string           { return "claude" }
+func (Claude) Program() string        { return "claude" }
+func (Claude) LoginCommand() []string { return []string{"claude", "auth", "login"} }
+
+func (Claude) Args(t Turn) []string {
+	a := []string{"-p", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--setting-sources", "project"}
+	if t.Resume {
+		a = append(a, "--resume", t.SessionID)
+	} else {
+		a = append(a, "--session-id", t.SessionID)
+	}
+	switch {
+	case t.Sandboxed && t.SystemText != "":
+		a = append(a, "--append-system-prompt", t.SystemText)
+	case t.SystemFile != "":
+		// Outside a sandbox (Windows argv is capped at 32k), pass a file.
+		a = append(a, "--append-system-prompt-file", t.SystemFile)
+	}
+	if t.Model != "" {
+		a = append(a, "--model", t.Model)
+	}
+	switch {
+	case t.ReadOnly:
+		a = append(a, "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk")
+	case t.Tools != nil:
+		a = append(a, "--tools", strings.Join(t.Tools, ","), "--permission-mode", "bypassPermissions")
+	default:
+		a = append(a, "--permission-mode", "bypassPermissions")
+	}
+	if t.Schema != "" {
+		a = append(a, "--json-schema", t.Schema)
+	}
+	return a
+}
+
+func (Claude) Env(t Turn) []string {
+	return []string{"DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"}
+}
+
+type claudeLine struct {
+	Type      string `json:"type"`
+	Subtype   string `json:"subtype"`
+	SessionID string `json:"session_id"`
+	Model     string `json:"model"`
+	Message   *struct {
+		Content []struct {
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
+		} `json:"content"`
+	} `json:"message"`
+	Result           string          `json:"result"`
+	IsError          bool            `json:"is_error"`
+	TotalCost        float64         `json:"total_cost_usd"`
+	StructuredOutput json.RawMessage `json:"structured_output"`
+	APIErrorStatus   *int            `json:"api_error_status"`
+	RateLimitInfo    *struct {
+		Status         string  `json:"status"`
+		ResetsAt       int64   `json:"resetsAt"`
+		RateLimitType  string  `json:"rateLimitType"`
+		Utilization    float64 `json:"utilization"`
+		UnifiedWindows map[string]struct {
+			Utilization float64 `json:"utilization"`
+			ResetsAt    int64   `json:"resetsAt"`
+		} `json:"unifiedWindows"`
+	} `json:"rate_limit_info"`
+}
+
+func (Claude) Parse(line []byte) []Event {
+	var l claudeLine
+	if json.Unmarshal(line, &l) != nil {
+		return nil
+	}
+	switch l.Type {
+	case "system":
+		if l.Subtype == "init" {
+			return []Event{{Kind: "init", SessionID: l.SessionID, Model: l.Model}}
+		}
+	case "assistant":
+		if l.Message == nil {
+			return nil
+		}
+		var out []Event
+		for _, c := range l.Message.Content {
+			switch c.Type {
+			case "text":
+				if strings.TrimSpace(c.Text) != "" {
+					out = append(out, Event{Kind: "text", Text: c.Text})
+				}
+			case "tool_use":
+				out = append(out, Event{Kind: "tool", Tool: c.Name, Text: summarizeInput(c.Input)})
+			}
+		}
+		return out
+	case "rate_limit_event":
+		if l.RateLimitInfo == nil {
+			return nil
+		}
+		ri := l.RateLimitInfo
+		rl := &RateLimit{Status: ri.Status, Window: ri.RateLimitType, Utilization: ri.Utilization, Windows: map[string]Window{}}
+		if ri.ResetsAt > 0 {
+			rl.ResetsAt = time.Unix(ri.ResetsAt, 0).UTC()
+		}
+		for k, w := range ri.UnifiedWindows {
+			rl.Windows[k] = Window{Utilization: w.Utilization, ResetsAt: time.Unix(w.ResetsAt, 0).UTC()}
+		}
+		return []Event{{Kind: "ratelimit", RateLimit: rl}}
+	case "result":
+		r := &Result{Text: l.Result, IsError: l.IsError, Subtype: l.Subtype, CostUSD: l.TotalCost}
+		if len(l.StructuredOutput) > 0 && string(l.StructuredOutput) != "null" {
+			r.Structured = l.StructuredOutput
+		}
+		if l.APIErrorStatus != nil {
+			r.APIStatus = *l.APIErrorStatus
+		}
+		r.Limited = r.IsError && LooksLimited(r.Text)
+		return []Event{{Kind: "result", SessionID: l.SessionID, Result: r}}
+	}
+	return nil
+}
+
+// LooksLimited recognizes a usage-limit message in an error result.
+func LooksLimited(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "usage limit") || strings.Contains(s, "hit your limit") ||
+		(strings.Contains(s, "limit") && strings.Contains(s, "reset"))
+}
+
+func summarizeInput(raw json.RawMessage) string {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return ""
+	}
+	for _, k := range []string{"command", "file_path", "pattern", "url", "description", "prompt"} {
+		if v, ok := m[k].(string); ok {
+			return Clip(v, 160)
+		}
+	}
+	return ""
+}
+
+// Clip shortens s to n runes on one line.
+func Clip(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}

@@ -1,0 +1,380 @@
+// Package chat is the chat module: the lead's chat, each project lead's chat,
+// and a chat with any running agent. Threads keep an ask and everything that
+// follows it together. Status noise stays out; it belongs on the dashboard.
+package chat
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ihsan-sa/hive/internal/core"
+	"github.com/ihsan-sa/hive/internal/mod/agents"
+)
+
+// Chat is one conversation.
+type Chat struct {
+	ID      string    `json:"id"` // lead | project:<name> | agent:<run>
+	Title   string    `json:"title"`
+	Kind    string    `json:"kind"` // lead | project | agent
+	Project string    `json:"project,omitempty"`
+	Lead    string    `json:"lead,omitempty"` // lead run id
+	Created time.Time `json:"created"`
+}
+
+// Message is one line in a chat.
+type Message struct {
+	ID     string    `json:"id"`
+	Chat   string    `json:"chat"`
+	Thread string    `json:"thread"`
+	From   string    `json:"from"` // person | hive | <run id>
+	Name   string    `json:"name"`
+	Text   string    `json:"text"`
+	At     time.Time `json:"at"`
+}
+
+// Module holds chats.
+type Module struct {
+	C      *core.Core
+	Agents *agents.Agents
+
+	mu    sync.Mutex
+	chats map[string]*Chat
+	msgs  map[string][]Message
+	read  map[string]int
+}
+
+// New loads chats and messages.
+func New(c *core.Core, a *agents.Agents) *Module {
+	m := &Module{C: c, Agents: a, chats: map[string]*Chat{}, msgs: map[string][]Message{}, read: map[string]int{}}
+	apply := func(e core.Event) {
+		if e.Kind == "chat.created" || e.Kind == "chat.updated" {
+			var ch Chat
+			e.Decode(&ch)
+			m.mu.Lock()
+			m.chats[ch.ID] = &ch
+			m.mu.Unlock()
+		}
+	}
+	c.J.Replay(apply)
+	c.J.Subscribe(apply)
+	c.J.Subscribe(m.onEvent)
+	for id := range m.chats {
+		core.ReadJSONL(m.file(id), func(raw []byte) {
+			var msg Message
+			if json.Unmarshal(raw, &msg) == nil {
+				m.msgs[id] = append(m.msgs[id], msg)
+			}
+		})
+	}
+	if raw, err := os.ReadFile(filepath.Join(c.WS.Chats(), "read.json")); err == nil {
+		json.Unmarshal(raw, &m.read)
+	}
+	m.ensure(Chat{ID: "lead", Title: "lead", Kind: "lead"})
+	c.Runs.Ops().AddRouter(m.route)
+	return m
+}
+
+func (m *Module) file(id string) string {
+	return filepath.Join(m.C.WS.Chats(), strings.NewReplacer(":", "_", "/", "_", `\`, "_").Replace(id)+".jsonl")
+}
+
+func (m *Module) ensure(ch Chat) *Chat {
+	m.mu.Lock()
+	existing := m.chats[ch.ID]
+	m.mu.Unlock()
+	if existing != nil {
+		return existing
+	}
+	ch.Created = time.Now().UTC()
+	m.C.J.MustAppend("chat.created", ch)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.chats[ch.ID]
+}
+
+// EnsureProject creates a project's chat.
+func (m *Module) EnsureProject(project string) *Chat {
+	return m.ensure(Chat{ID: "project:" + project, Title: project, Kind: "project", Project: project})
+}
+
+// EnsureAgent creates a chat with a run.
+func (m *Module) EnsureAgent(runID string) (*Chat, error) {
+	r, ok := m.C.Runs.Get(runID)
+	if !ok {
+		return nil, core.ErrNotFound
+	}
+	title := r.Role + " " + shortID(r.ID)
+	if r.Name != "" {
+		title = r.Name
+	}
+	return m.ensure(Chat{ID: "agent:" + r.ID, Title: title, Kind: "agent", Project: r.Project, Lead: r.ID}), nil
+}
+
+func shortID(id string) string {
+	if i := strings.LastIndexByte(id, '-'); i >= 0 && len(id)-i > 5 {
+		return id[i+1 : i+6]
+	}
+	return id
+}
+
+func (m *Module) add(msg Message) Message {
+	if msg.ID == "" {
+		msg.ID = core.NewID()
+	}
+	if msg.Thread == "" {
+		msg.Thread = msg.ID
+	}
+	msg.At = time.Now().UTC()
+	core.AppendJSONL(m.file(msg.Chat), msg)
+	m.mu.Lock()
+	m.msgs[msg.Chat] = append(m.msgs[msg.Chat], msg)
+	m.mu.Unlock()
+	m.C.J.MustAppend("chat.posted", map[string]string{"chat": msg.Chat, "id": msg.ID, "thread": msg.Thread, "from": msg.From})
+	return msg
+}
+
+// Post is the person writing in a chat; it reaches the chat's lead or agent.
+func (m *Module) Post(chatID, thread, text string) (Message, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return Message{}, fmt.Errorf("empty message")
+	}
+	m.mu.Lock()
+	ch := m.chats[chatID]
+	m.mu.Unlock()
+	if ch == nil {
+		if strings.HasPrefix(chatID, "agent:") {
+			var err error
+			if ch, err = m.EnsureAgent(strings.TrimPrefix(chatID, "agent:")); err != nil {
+				return Message{}, err
+			}
+		} else {
+			return Message{}, core.ErrNotFound
+		}
+	}
+	msg := m.add(Message{Chat: chatID, Thread: thread, From: "person", Name: "you", Text: text})
+	switch ch.Kind {
+	case "agent":
+		if err := m.C.Runs.Send(ch.Lead, "[the person, in your chat] "+text); err != nil {
+			return msg, err
+		}
+	default:
+		prompt := fmt.Sprintf("[chat %s · thread %s · %s] Person: %s", chatID, msg.Thread, time.Now().Format("Mon 15:04"), text)
+		if err := m.deliverToLead(ch, prompt); err != nil {
+			return msg, err
+		}
+	}
+	return msg, nil
+}
+
+// deliverToLead sends text to the chat's lead, starting the lead if needed.
+func (m *Module) deliverToLead(ch *Chat, text string) error {
+	if ch.Lead != "" {
+		if r, ok := m.C.Runs.Get(ch.Lead); ok && (!r.Terminal()) {
+			return m.C.Runs.Send(r.ID, text)
+		}
+	}
+	id := "lead-" + strings.NewReplacer(":", "-").Replace(ch.ID) + "-" + core.NewID()[14:]
+	name := "lead"
+	var dir string
+	var err error
+	project := ""
+	if ch.Kind == "project" {
+		project = ch.Project
+		name = "lead:" + project
+		p, ok := m.C.Projects.Get(project)
+		if !ok {
+			return fmt.Errorf("project %s not found", project)
+		}
+		base, err := m.C.Effects.Sync(p)
+		if err != nil {
+			return err
+		}
+		if dir, err = m.C.Effects.NewCheckout(p, id, base); err != nil {
+			return err
+		}
+	} else {
+		dir = filepath.Join(m.C.WS.Hive(), "leads", "main")
+		if err = os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	spec := m.Agents.Spec(id, "lead", project, dir, text)
+	spec.Name, spec.Persistent = name, true
+	if _, err := m.C.Runs.Start(spec); err != nil {
+		return err
+	}
+	c := *ch
+	c.Lead = id
+	m.C.J.MustAppend("chat.updated", c)
+	return nil
+}
+
+// Notify posts an outcome into a thread and tells the chat's lead.
+func (m *Module) Notify(chatID, thread, text string) {
+	if chatID == "" {
+		chatID = "lead"
+	}
+	m.mu.Lock()
+	ch := m.chats[chatID]
+	m.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	m.add(Message{Chat: chatID, Thread: thread, From: "hive", Name: "hive", Text: text})
+	if ch.Lead != "" {
+		if r, ok := m.C.Runs.Get(ch.Lead); ok && !r.Terminal() {
+			m.C.Runs.Send(r.ID, fmt.Sprintf("[notification · thread %s] %s", thread, text))
+		}
+	}
+}
+
+var threadRe = regexp.MustCompile(`thread ([0-9a-z-]+)`)
+
+// CurrentThread is the chat thread a lead is working in this turn.
+func (m *Module) CurrentThread(r core.Run) (chatID, thread string) {
+	m.mu.Lock()
+	for _, ch := range m.chats {
+		if ch.Lead == r.ID && ch.Kind != "agent" {
+			chatID = ch.ID
+		}
+	}
+	m.mu.Unlock()
+	raw, _ := os.ReadFile(filepath.Join(m.C.WS.RunHost(r.ID), fmt.Sprintf("turn-%03d.prompt", r.Turn)))
+	if r.Turn == 0 || len(raw) == 0 {
+		raw = []byte(r.Brief)
+	}
+	if all := threadRe.FindAllStringSubmatch(string(raw), -1); len(all) > 0 {
+		thread = all[len(all)-1][1]
+	}
+	return chatID, thread
+}
+
+// onEvent posts a lead's turn result into the thread it was answering.
+func (m *Module) onEvent(e core.Event) {
+	switch e.Kind {
+	case "run.turn_ended":
+		var t struct {
+			ID     string `json:"id"`
+			Turn   int    `json:"turn"`
+			Status string `json:"status"`
+			Result *struct {
+				Text    string `json:"text"`
+				IsError bool   `json:"is_error"`
+			} `json:"result"`
+		}
+		e.Decode(&t)
+		if t.Result == nil || t.Result.IsError {
+			return
+		}
+		r, ok := m.C.Runs.Get(t.ID)
+		if !ok || r.Role != "lead" {
+			return
+		}
+		text := strings.TrimSpace(t.Result.Text)
+		if text == "" || strings.HasPrefix(text, "NOOP") {
+			return
+		}
+		r.Turn = t.Turn
+		chatID, thread := m.CurrentThread(r)
+		if chatID == "" {
+			return
+		}
+		m.add(Message{Chat: chatID, Thread: thread, From: r.ID, Name: r.Name, Text: text})
+	case "msg.sent":
+		var s struct{ From, To, Text string }
+		e.Decode(&s)
+		for _, id := range []string{s.From, s.To} {
+			m.mu.Lock()
+			_, ok := m.chats["agent:"+id]
+			m.mu.Unlock()
+			if ok {
+				m.add(Message{Chat: "agent:" + id, From: s.From, Name: s.From + " → " + s.To, Text: s.Text})
+			}
+		}
+	}
+}
+
+// route handles messages addressed to the person.
+func (m *Module) route(from core.Run, to, text string) (bool, error) {
+	if to != "person" && to != "you" {
+		return false, nil
+	}
+	if from.Role == "lead" {
+		chatID, thread := m.CurrentThread(from)
+		if chatID == "" {
+			chatID = "lead"
+		}
+		m.add(Message{Chat: chatID, Thread: thread, From: from.ID, Name: from.Name, Text: text})
+		return true, nil
+	}
+	ch, err := m.EnsureAgent(from.ID)
+	if err != nil {
+		return true, err
+	}
+	m.add(Message{Chat: ch.ID, From: from.ID, Name: ch.Title, Text: text})
+	return true, nil
+}
+
+// Chats returns all chats, leads first, then projects, then agents.
+func (m *Module) Chats() []Chat {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Chat
+	for _, c := range m.chats {
+		out = append(out, *c)
+	}
+	rank := map[string]int{"lead": 0, "project": 1, "agent": 2}
+	sort.Slice(out, func(i, j int) bool {
+		if rank[out[i].Kind] != rank[out[j].Kind] {
+			return rank[out[i].Kind] < rank[out[j].Kind]
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// Get returns a chat.
+func (m *Module) Get(id string) (Chat, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.chats[id]
+	if !ok {
+		return Chat{}, false
+	}
+	return *c, true
+}
+
+// Messages returns a chat's messages.
+func (m *Module) Messages(id string) []Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]Message{}, m.msgs[id]...)
+}
+
+// Unread counts messages after the person last read the chat.
+func (m *Module) Unread(id string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.msgs[id]) - m.read[id]
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// MarkRead records that the person has seen a chat.
+func (m *Module) MarkRead(id string) {
+	m.mu.Lock()
+	m.read[id] = len(m.msgs[id])
+	raw, _ := json.Marshal(m.read)
+	m.mu.Unlock()
+	core.WriteFileAtomic(filepath.Join(m.C.WS.Chats(), "read.json"), raw, 0o644)
+}

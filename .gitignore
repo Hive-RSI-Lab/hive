@@ -1,0 +1,7 @@
+/hive
+/hive.exe
+/hive-linux-amd64
+/dist/
+*.test
+*.exe~
+__pycache__/

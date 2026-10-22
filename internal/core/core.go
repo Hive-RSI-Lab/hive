@@ -1,0 +1,106 @@
+package core
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"time"
+
+	"github.com/ihsan-sa/hive/internal/sandbox"
+)
+
+// Version is set at build time.
+var Version = "0.0.0-dev"
+
+// Core wires the core's parts together.
+type Core struct {
+	WS       Workspace
+	J        *Journal
+	Runs     *Runs
+	Effects  *Effects
+	Projects *Projects
+	Person   *Person
+	Tokens   *Tokens
+
+	sbMu   sync.Mutex
+	sb     sandbox.Sandbox
+	sbErr  error
+	sbAt   time.Time
+	sbMode string
+}
+
+// Open loads the workspace's records and builds the core.
+func Open(ws Workspace, forge Forge) (*Core, error) {
+	if err := ws.Init(); err != nil {
+		return nil, err
+	}
+	j, err := OpenJournal(ws.Events())
+	if err != nil {
+		return nil, err
+	}
+	c := &Core{WS: ws, J: j, Tokens: NewTokens(ws)}
+	c.Projects = NewProjects(j)
+	c.Person = NewPerson(j)
+	c.Runs = NewRuns(ws, j, c.Sandbox, c.Tokens.AgentEnv, c.Tools)
+	c.Effects = NewEffects(ws, j, forge, c.Sandbox, c.Tools, c.Runs)
+	return c, nil
+}
+
+// Sandbox returns the sandbox agents run in, per the person's settings. With
+// no sandbox and no opt-in, agents don't start.
+func (c *Core) Sandbox() (sandbox.Sandbox, error) {
+	cfg := c.WS.LoadConfig()
+	mode := cfg.Sandbox
+	if mode == "bare" && cfg.BareAccepted == "" {
+		return nil, errors.New("bare runs need the warning read first (Settings, or `hive doctor --bare`)")
+	}
+	c.sbMu.Lock()
+	defer c.sbMu.Unlock()
+	if c.sbMode == mode+cfg.WSLDistro && (c.sbErr == nil && c.sb != nil || time.Since(c.sbAt) < 2*time.Minute) {
+		return c.sb, c.sbErr
+	}
+	c.sb, c.sbErr = sandbox.Select(sandbox.Options{Mode: mode, WSLDistro: cfg.WSLDistro, HiveLinux: c.HiveLinux()})
+	c.sbAt, c.sbMode = time.Now(), mode+cfg.WSLDistro
+	return c.sb, c.sbErr
+}
+
+// ResetSandbox forgets the cached sandbox choice (after settings change).
+func (c *Core) ResetSandbox() {
+	c.sbMu.Lock()
+	c.sbMode = ""
+	c.sbMu.Unlock()
+}
+
+// HiveLinux is the linux/amd64 hive binary used inside WSL.
+func (c *Core) HiveLinux() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	exe, _ := os.Executable()
+	for _, p := range []string{filepath.Join(filepath.Dir(exe), "hive-linux-amd64"), filepath.Join(c.WS.Bin(), "hive-linux-amd64")} {
+		if Exists(p) {
+			return p
+		}
+	}
+	return filepath.Join(filepath.Dir(exe), "hive-linux-amd64")
+}
+
+// Tools returns the hive binary to expose to agents, built for the sandbox's OS.
+func (c *Core) Tools() []string {
+	c.sbMu.Lock()
+	sb := c.sb
+	c.sbMu.Unlock()
+	if sb != nil && runtime.GOOS == "windows" && sb.Isolated() {
+		return []string{c.HiveLinux()}
+	}
+	exe, _ := os.Executable()
+	return []string{exe}
+}
+
+// Tick advances runs; modules tick themselves from the daemon loop.
+func (c *Core) Tick() { c.Runs.Tick() }
+
+// Close closes the journal.
+func (c *Core) Close() error { return c.J.Close() }

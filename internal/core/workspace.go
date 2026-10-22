@@ -1,0 +1,214 @@
+package core
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Workspace is the folder on disk: .hive (core state), .modules, projects.
+type Workspace struct {
+	Root string
+}
+
+func (w Workspace) Hive() string               { return filepath.Join(w.Root, ".hive") }
+func (w Workspace) Modules() string            { return filepath.Join(w.Root, ".modules") }
+func (w Workspace) Projects() string           { return filepath.Join(w.Root, "projects") }
+func (w Workspace) Project(name string) string { return filepath.Join(w.Projects(), name) }
+func (w Workspace) Events() string             { return filepath.Join(w.Hive(), "events.jsonl") }
+func (w Workspace) Runs() string               { return filepath.Join(w.Hive(), "runs") }
+func (w Workspace) Run(id string) string       { return filepath.Join(w.Runs(), id) }
+func (w Workspace) Chats() string              { return filepath.Join(w.Hive(), "chats") }
+func (w Workspace) KB() string                 { return filepath.Join(w.Hive(), "kb") }
+func (w Workspace) ConfigPath() string         { return filepath.Join(w.Hive(), "config.json") }
+func (w Workspace) DaemonFile() string         { return filepath.Join(w.Hive(), "daemon.json") }
+func (w Workspace) Bin() string                { return filepath.Join(w.Hive(), "bin") }
+func (w Workspace) Gates() string              { return filepath.Join(w.Hive(), "gates") }
+
+// Checkouts is where agents' own checkouts of a project live.
+func (w Workspace) Checkouts(project string) string {
+	return filepath.Join(w.Project(project), ".checkouts")
+}
+
+// Config is the workspace's settings, edited from the control center.
+type Config struct {
+	// Autonomy: 1 "ask me before anything outside the project", 2 default, 3 "tell me after".
+	Autonomy       int      `json:"autonomy"`
+	Harness        string   `json:"harness"`
+	Model          string   `json:"model"`
+	ReviewerModel  string   `json:"reviewer_model"`
+	TribunalModels []string `json:"tribunal_models"`
+	// Sandbox: "auto" uses the platform sandbox and refuses agents without one;
+	// "bare" is the documented, opted-in state where agents run unsandboxed.
+	Sandbox      string                     `json:"sandbox"`
+	BareAccepted string                     `json:"bare_accepted,omitempty"` // timestamp the warning was read
+	WSLDistro    string                     `json:"wsl_distro,omitempty"`
+	ReleaseRepo  string                     `json:"release_repo"`
+	AutoUpdate   bool                       `json:"auto_update"`
+	APIKeyOptIn  bool                       `json:"api_key_opt_in"`
+	ReviewRounds int                        `json:"review_rounds"`
+	Projects     map[string]ProjectSettings `json:"projects,omitempty"`
+	Schedules    map[string]string          `json:"schedules,omitempty"` // name -> "every 12h" | "daily 03:00" | "off"
+}
+
+// ProjectSettings override workspace defaults per project.
+type ProjectSettings struct {
+	Harness string `json:"harness,omitempty"`
+	Model   string `json:"model,omitempty"`
+}
+
+// DefaultConfig is a fresh install's settings.
+func DefaultConfig() Config {
+	return Config{
+		Autonomy:       2,
+		Harness:        "claude",
+		Model:          "sonnet",
+		ReviewerModel:  "opus",
+		TribunalModels: []string{"opus", "sonnet", "fable"},
+		Sandbox:        "auto",
+		ReleaseRepo:    DefaultReleaseRepo,
+		AutoUpdate:     true,
+		ReviewRounds:   3,
+		Schedules: map[string]string{
+			"improve.sweep":  "every 12h",
+			"kb.file":        "daily 04:00",
+			"modules.update": "every 24h",
+			"hive.update":    "every 6h",
+		},
+	}
+}
+
+// DefaultReleaseRepo is where installs look for new releases; set at build time.
+var DefaultReleaseRepo = "ihsan-sa/hive"
+
+var cfgMu sync.Mutex
+
+// LoadConfig reads config.json, filling defaults for missing fields.
+func (w Workspace) LoadConfig() Config {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	c := DefaultConfig()
+	raw, err := os.ReadFile(w.ConfigPath())
+	if err == nil {
+		_ = json.Unmarshal(raw, &c)
+	}
+	if c.Schedules == nil {
+		c.Schedules = DefaultConfig().Schedules
+	}
+	return c
+}
+
+// SaveConfig writes config.json atomically.
+func (w Workspace) SaveConfig(c Config) error {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	raw, _ := json.MarshalIndent(c, "", "  ")
+	return WriteFileAtomic(w.ConfigPath(), raw, 0o600)
+}
+
+// WriteFileAtomic writes via a temp file and rename.
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp-" + NewID()[:6]
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// NewID returns a short random id, sortable by time prefix.
+func NewID() string {
+	var b [5]byte
+	_, _ = rand.Read(b[:])
+	return time.Now().UTC().Format("060102-150405") + "-" + hex.EncodeToString(b[:])
+}
+
+// NewUUID returns a random RFC 4122 v4 UUID (harness session ids need one).
+func NewUUID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	h := hex.EncodeToString(b[:])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+}
+
+// pointerFile records where the workspace lives so `hive` works from any directory.
+func pointerFile() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir = filepath.Join(HomeDir(), ".config")
+	}
+	return filepath.Join(dir, "hive", "workspace")
+}
+
+// HomeDir returns the user's home directory.
+func HomeDir() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return h
+}
+
+// DefaultRoot is ~/hive.
+func DefaultRoot() string { return filepath.Join(HomeDir(), "hive") }
+
+// FindWorkspace returns the configured workspace: $HIVE_HOME, the pointer file, or ~/hive.
+func FindWorkspace() (Workspace, bool) {
+	if v := os.Getenv("HIVE_HOME"); v != "" {
+		return Workspace{Root: v}, exists(filepath.Join(v, ".hive"))
+	}
+	if raw, err := os.ReadFile(pointerFile()); err == nil {
+		root := strings.TrimSpace(string(raw))
+		if root != "" {
+			return Workspace{Root: root}, exists(filepath.Join(root, ".hive"))
+		}
+	}
+	root := DefaultRoot()
+	return Workspace{Root: root}, exists(filepath.Join(root, ".hive"))
+}
+
+// RememberWorkspace writes the pointer file.
+func RememberWorkspace(root string) error {
+	return WriteFileAtomic(pointerFile(), []byte(root+"\n"), 0o644)
+}
+
+// ForgetWorkspace removes the pointer file (uninstall leaves the folder alone).
+func ForgetWorkspace() { os.Remove(pointerFile()) }
+
+// Init creates the folder layout.
+func (w Workspace) Init() error {
+	for _, d := range []string{w.Hive(), w.Modules(), w.Projects(), w.Runs(), w.Chats(), w.KB(), w.Bin(), w.Gates()} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return err
+		}
+	}
+	if !exists(w.ConfigPath()) {
+		return w.SaveConfig(DefaultConfig())
+	}
+	return nil
+}
+
+func exists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// Exists reports whether a path exists.
+func Exists(p string) bool { return exists(p) }
+
+// ErrNotFound is returned for missing records.
+var ErrNotFound = errors.New("not found")

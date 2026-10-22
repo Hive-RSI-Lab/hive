@@ -1,0 +1,6 @@
+{
+  "name": "chat",
+  "description": "Chats with the lead, each project's lead, and any running agent. Threads keep an ask and what follows it together.",
+  "provides": {"channels": ["terminal"]},
+  "projects": ["*"]
+}

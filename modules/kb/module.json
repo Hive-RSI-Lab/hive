@@ -1,0 +1,6 @@
+{
+  "name": "kb",
+  "description": "The knowledge base: the Hive's memory across projects and runs. Agents read it directly and write with `hive agent remember`; a scheduled filer consolidates it.",
+  "provides": {"schedules": ["kb.file"], "procedures": ["searching.md"]},
+  "projects": ["*"]
+}
