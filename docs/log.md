@@ -9,14 +9,20 @@
 ## 2026-10-22 In-house Linux sandbox instead of bwrap
 - Decision: namespaces built by the hive binary; egress through a host proxy that refuses local/private addresses | Why: no root, no packages (WSL Ubuntu had no bwrap, no sudo), and "no way to local services" needs filtering a plain shared netns can't give | Tradeoff: more code in `internal/sandbox`; macOS uses Seatbelt (untested).
 
+## 2026-10-22 bubblewrap where Ubuntu restricts user namespaces
+- Decision: when `kernel.apparmor_restrict_unprivileged_userns=1` (stock Ubuntu 23.10+), `sandbox-exec` hands the same mounts, tools and egress socket to `bwrap`, which runs `hive sandbox-inner` (loopback forwarder + command); WSL and other hosts keep the build's own namespaces | Why: the kernel refuses the hive binary's own user namespaces there, and bwrap's AppArmor profile is allowed them, so agents would otherwise fall back to bare runs | Tradeoff: two launch paths; `HIVE_SANDBOX_BWRAP=1` forces bwrap for tests.
+
 ## 2026-10-22 Commits leave checkouts as bundles made inside the sandbox
 - Decision: `git bundle` runs sandboxed; host fetches with fsck, verifies descent from the recorded base | Why: an agent controls its `.git` (gitfile redirects, hooks, fsmonitor); host git never runs there | Tradeoff: an extra sandboxed step per landing.
 
 ## 2026-10-22 Checks use main's project.json; score/goals/settings are protected
 - Decision: test/score commands come from main, not the PR; changes to `.hive/project.json`, `.hive/goals.md` and declared `protected` paths need the person | Why: a change must not rewrite the check it's judged by | Tradeoff: bootstrapping a project's score needs one person approval.
 
-## 2026-10-22 Risk module ships as a relay to the person
-- Decision: no path runs an agent's request outside the sandbox; requests go to the Waiting queue; module installs are a fixed clone on approval | Why: two attempts at warden/tribunal host execution were stopped by a safety check; owner chose to build the rest and implement the warden/tribunal module themselves | Tradeoff: milestone 6 becomes "requests reach the person"; design kept in docs/risk.md.
+## 2026-10-22 Warden and tribunal run approved steps in the daemon
+- Decision: replaces the v1 relay. Tiers route a step (T1 worker, T2 warden, T3 tribunal, ceiling person; autonomy moves T2); an approved script runs as `sh -c` in `.hive/risk/<id>` in the daemon after a sha256 digest check and `core.CeilingGuard`; the tribunal is three read-only runs over `tribunal_models`, two rounds, majority | Why: spec milestone 6, ported from the box's Claude build of the same spec | Tradeoff: no per-step sandbox beyond sh, its own directory and a timeout; the warden's script is the only thing weighed, so the warden must keep it to exactly the step.
+
+## 2026-10-22 Read-only turns answer in structured output and read their run dir
+- Decision: panelists vote through `--json-schema` like the reviewer; read-only turns get `--add-dir` for `/hive/run` and nothing else; a reviewer's land counts only with the token from its brief.md; the warden's brief gives host paths | Why: a real run found panelists had no shell to vote, reviewers couldn't read their inputs yet voted land, and warden scripts used sandbox paths on the host | Tradeoff: the fake harness now refuses shell and unlisted dirs on read-only turns, so it fails where Claude would.
 
 ## 2026-10-22 Squash merges, best-kept comparison
 - Decision: squash merge pinned with `--match-head-commit`; measure each merge sha; compare with best kept score; revert via host-made commit + lessons line | Why: one commit per change makes reverts exact; best-kept stops drift under tolerance | Tradeoff: per-commit history of a branch isn't kept on main.
