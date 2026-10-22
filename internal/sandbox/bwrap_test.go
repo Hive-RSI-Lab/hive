@@ -90,3 +90,24 @@ func TestProbeBothPaths(t *testing.T) {
 	}
 	t.Logf("%d of 2 sandbox paths ran on this host", ran)
 }
+
+// A python installed outside the system dirs is bound read-only at its own
+// path, install and all, and found by name inside after the Hive's dirs.
+func TestHostInterpreterReachesInside(t *testing.T) {
+	inst := filepath.Join(t.TempDir(), "cpython")
+	os.MkdirAll(filepath.Join(inst, "bin"), 0o755)
+	os.WriteFile(filepath.Join(inst, "bin", "python3"), []byte("#!/bin/sh\n"), 0o755)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", filepath.Join(inst, "bin")+":/usr/bin:/bin")
+	a := initArgs{Spec: Spec{Env: InsideEnv("/hive/home", false)}}
+	hostInterpreters(&a)
+	if !slices.Contains(a.Roots, inst) {
+		t.Fatalf("roots %q lack %s", a.Roots, inst)
+	}
+	if !slices.Contains(a.Spec.Env, "PATH=/hive/bin:"+filepath.Join(inst, "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin") {
+		t.Fatalf("env %q", a.Spec.Env)
+	}
+	if got := strings.Join(bwrapArgs(a, "/h/hive"), " "); !strings.Contains(got, "--ro-bind "+inst+" "+inst) {
+		t.Fatalf("bwrap args lack the install:\n%s", got)
+	}
+}

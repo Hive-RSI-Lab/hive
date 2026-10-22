@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -109,6 +110,7 @@ type initArgs struct {
 	Root   string            `json:"root"`
 	Socket string            `json:"socket"`
 	Tools  map[string]string `json:"tools"`
+	Roots  []string          `json:"roots"` // host interpreter installs, bound read-only at their own paths
 }
 
 // Exec is `hive sandbox-exec`: the host side of one sandboxed command.
@@ -159,6 +161,7 @@ func Exec(specPath string) int {
 		}
 		args.Tools[name] = p
 	}
+	hostInterpreters(&args)
 	raw, _ := json.Marshal(args)
 	argPath := filepath.Join(rt, "init.json")
 	if err := os.WriteFile(argPath, raw, 0o600); err != nil {
@@ -259,6 +262,68 @@ func findTool(t string) (string, error) {
 	return filepath.EvalSymlinks(t)
 }
 
+// interpreters are the host's own runtimes a command may call by name. One
+// installed outside systemDirs (by uv, pip or pyenv under the home, say) would
+// be missing from the sandbox's root, so its install is bound read-only at
+// its own path, and the dir it runs from goes on PATH after the Hive's own
+// dirs: inside, the name finds the same program it finds on the host.
+var interpreters = []string{"python3", "python", "node", "uv", "go"}
+
+func hostInterpreters(a *initArgs) {
+	home, _ := os.UserHomeDir()
+	var dirs []string
+	for _, n := range interpreters {
+		p, err := findTool(n)
+		if err != nil {
+			continue
+		}
+		dir := filepath.Dir(p)
+		root := dir
+		if filepath.Base(dir) == "bin" && filepath.Dir(dir) != home && filepath.Dir(dir) != filepath.Join(home, ".local") {
+			root = filepath.Dir(dir) // the whole install: python's stdlib sits beside its bin
+		}
+		if !underSystem(dir) && !slices.Contains(a.Roots, root) {
+			a.Roots = append(a.Roots, root)
+		}
+		if !slices.Contains(dirs, dir) {
+			dirs = append(dirs, dir)
+		}
+	}
+	a.Spec.Env = insertPath(a.Spec.Env, dirs)
+}
+
+func underSystem(p string) bool {
+	for _, d := range systemDirs {
+		if p == d || strings.HasPrefix(p, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// insertPath puts dirs not already on PATH after its /hive/ entries.
+func insertPath(env, dirs []string) []string {
+	for i, kv := range env {
+		v, ok := strings.CutPrefix(kv, "PATH=")
+		if !ok {
+			continue
+		}
+		path := filepath.SplitList(v)
+		at := 0
+		for at < len(path) && strings.HasPrefix(path[at], "/hive/") {
+			at++
+		}
+		var add []string
+		for _, d := range dirs {
+			if !slices.Contains(path, d) {
+				add = append(add, d)
+			}
+		}
+		env[i] = "PATH=" + strings.Join(slices.Insert(path, at, add...), ":")
+	}
+	return env
+}
+
 // systemDirs are exposed read-only; everything else (home, /mnt, /run, /tmp,
 // sockets) simply isn't in the sandbox's root.
 var systemDirs = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/var", "/srv", "/nix"}
@@ -307,6 +372,11 @@ func Init(argPath string) int {
 	}
 	if err := mkdirMount("tmpfs", root+"/tmp", "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, "mode=1777"); err != nil {
 		return fail("tmp", err)
+	}
+	for _, r := range a.Roots {
+		if err := bind(r, root+r, false); err != nil {
+			return fail("bind "+r, err)
+		}
 	}
 	for _, m := range s.Mounts {
 		if err := bind(m.Host, root+m.Inside, m.RW); err != nil {
