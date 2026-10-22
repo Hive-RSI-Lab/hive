@@ -186,15 +186,72 @@ func TestWardenSaferAndDecline(t *testing.T) {
 	}
 }
 
+// A warden that ends, goes quiet or runs out of time hands the request to
+// the person, who sees what was asked and does it or declines.
 func TestWardenEndsWithoutDeciding(t *testing.T) {
-	for _, status := range []string{core.StatusDone, core.StatusQuiet} {
+	for _, status := range []string{core.StatusDone, core.StatusQuiet, "late"} {
 		g := newRig(t, 2)
 		req := g.request("install a tool", "x", "T2")
-		g.c.Runs.SetStatus(req.Warden, status, "")
-		g.m.Tick()
-		if got, _ := g.m.get(req.ID); got.State != "failed" {
-			t.Fatalf("%s warden: got %s", status, got.State)
+		if status == "late" {
+			defer func(d time.Duration) { WardenTimeout = d }(WardenTimeout)
+			WardenTimeout = 0
+		} else {
+			g.c.Runs.SetStatus(req.Warden, status, "")
 		}
+		g.m.Tick()
+		got, _ := g.m.get(req.ID)
+		a, _ := g.c.Person.Get(got.Ask)
+		if got.State != "asked" || strings.Join(a.Options, "|") != "done|declined" || !strings.Contains(a.Detail, "the brief needs it") {
+			t.Fatalf("%s warden: %+v %+v", status, got, a)
+		}
+		if w := g.run(req.Warden); status == "late" && !w.Terminal() {
+			t.Fatal("the late warden still runs")
+		}
+	}
+}
+
+// A warden may pass a step to the person with its script: run runs exactly
+// that, decline tells the worker no and runs nothing.
+func TestWardenPassesToThePerson(t *testing.T) {
+	for _, answer := range []string{"run", "declined"} {
+		g := newRig(t, 2)
+		req := g.request("install a system package", "apt-get install -y x", "T2")
+		if err := g.decide(req, map[string]string{"decision": "person", "reason": "needs root", "script": "echo ran > proof"}); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := g.m.get(req.ID)
+		a, _ := g.c.Person.Get(got.Ask)
+		if got.State != "asked" || a.Answer != "" || strings.Join(a.Options, "|") != "run|declined" ||
+			!strings.Contains(a.Detail, "install a system package") || !strings.Contains(a.Detail, "needs root") || !strings.Contains(a.Detail, "echo ran > proof") {
+			t.Fatalf("not in front of the person: %+v %+v", got, a)
+		}
+		out, _ := g.call(g.worker, "requests", nil)
+		if b, _ := json.Marshal(out); !strings.Contains(string(b), "approve "+a.ID) {
+			t.Fatalf("the lead can't see it: %s", b)
+		}
+		g.c.Person.Answer(a.ID, answer, "")
+		got = g.settle(req.ID, "asked", "approved", "running")
+		ran := core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.ID, "proof"))
+		if answer == "run" && (got.State != "done" || !ran || !g.told("done")) || answer == "declined" && (got.State != "declined" || ran || !g.told("declined")) {
+			t.Fatalf("%s: %+v ran=%v", answer, got, ran)
+		}
+	}
+}
+
+// A sudo step on a machine that wants a password goes to the person to run
+// themselves, whoever approved it, and nothing runs.
+func TestSudoWithPasswordGoesToThePerson(t *testing.T) {
+	defer func(f func() bool) { sudoOK = f }(sudoOK)
+	sudoOK = func() bool { return false }
+	g := newRig(t, 3)
+	req := g.request("install a system package", "apt-get install -y x", "T2")
+	if err := g.decide(req, map[string]string{"decision": "do", "reason": "fine", "script": "sudo apt-get install -y x"}); err != nil {
+		t.Fatal(err)
+	}
+	got := g.settle(req.ID, "approved", "running")
+	a, _ := g.c.Person.Get(got.Ask)
+	if got.State != "asked" || got.Output != "" || !strings.HasPrefix(a.Title, "Needs your password") || strings.Join(a.Options, "|") != "done|declined" {
+		t.Fatalf("%+v %+v", got, a)
 	}
 }
 

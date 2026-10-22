@@ -223,7 +223,7 @@ func (m *Module) Status() map[string]any {
 	}
 	var waiting []string
 	for _, a := range m.C.Person.Open() {
-		waiting = append(waiting, a.Title)
+		waiting = append(waiting, fmt.Sprintf("%s (from %s; the person answers in Waiting, or %s approve|refuse %s)", a.Title, a.From, core.Cmd, a.ID))
 	}
 	return map[string]any{"projects": ps, "waiting_on_person": waiting}
 }

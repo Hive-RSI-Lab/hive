@@ -159,6 +159,10 @@ func leadAsk(ask string) (string, error) {
 	if strings.Contains(strings.ToLower(ask), "what's in the repo") {
 		return "The repo has " + strings.Join(repoFiles(), ", ") + ".", nil
 	}
+	if strings.HasPrefix(strings.ToLower(ask), "can i approve") {
+		out, err := call("requests", map[string]string{}, time.Minute)
+		return "Here's what waits: " + string(out), err
+	}
 	if strings.HasPrefix(strings.ToLower(ask), "hello") {
 		return "Hello. I'm the lead. Tell me what you'd like done.", nil
 	}
@@ -212,6 +216,10 @@ func worker(all, prompt, system string) (string, error) {
 		}
 		_, err := call("warden", map[string]string{"want": "delete " + m[1], "why": "the ask names it", "steps": "rm -rf " + m[1], "tier": "T3"}, time.Minute)
 		return "waiting for the warden", err
+	}
+	if strings.Contains(all, "FAKE:wardenperson") && strings.Contains(prompt, "[request ") && strings.Contains(prompt, "declined") {
+		_, err := call("finish", map[string]string{"status": "blocked", "account": "FAKE: the person declined the install"}, time.Minute)
+		return "blocked", err
 	}
 	if strings.Contains(all, "FAKE:needpackage") && !strings.Contains(prompt, "[request ") {
 		why, steps := "the brief needs it "+strings.Join(riskKeys.FindAllString(all, -1), " "), "echo installing left-pad"
@@ -269,6 +277,9 @@ func warden(all string) error {
 	}
 	if strings.Contains(all, "FAKE:wardenmoney") {
 		script = "echo buying && stripe charges create"
+	}
+	if strings.Contains(all, "FAKE:wardenperson") { // a root install it leaves to the person
+		d, script = "person", "echo apt-get install -y left-pad"
 	}
 	if _, err := call("decide", map[string]string{"decision": d, "reason": "FAKE warden: " + d, "script": script, "gain": "large"}, time.Minute); err != nil {
 		return err

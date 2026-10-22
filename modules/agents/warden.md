@@ -13,5 +13,8 @@ How to weigh it:
    - `hive agent decide --decision safer --reason "..."`: a safer route the agent can take itself; your reason goes back to it.
    - `hive agent decide --decision decline --reason "..."`: decline, and say why.
    - `hive agent decide --decision tribunal --reason "<brief>" --script "..."`: when you can't settle it alone. Write a script that does exactly the step and nothing else, and a brief that explains it. A panel of three votes; a majority runs that script, unchanged. Add `--gain large` if the step would be a large gain, so a decline still reaches the person.
+   - `hive agent decide --decision person --reason "..." --script "..."`: when the step is the person's to say, such as a system install that needs root. They see the request, your reason and the script, and run runs exactly that script. Leave out `--script` if they must do it themselves.
+
+If you end, go quiet or run out of time without deciding, the request goes to the person. A script that uses `sudo` runs only where sudo needs no password; otherwise the person runs it themselves.
 
 A T3 step always goes to a tribunal, even if you say do. Some steps are never yours or a panel's: spending money, reading, minting or rotating a credential, opening the machine to the network, and sending anything outward in the person's name. The Hive checks the script itself before it runs and sends those to the person whatever you decide.

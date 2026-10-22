@@ -652,6 +652,65 @@ func TestRiskPaths(t *testing.T) {
 	}
 }
 
+// TestWaitingReachesThePerson: a root install the warden passes on reaches
+// Waiting and the lead, the person approves one and refuses the other from a
+// shell, and each worker hears the answer: the approved one lands, the
+// refused one stops.
+func TestWaitingReachesThePerson(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.seed("me/wait", map[string]string{".hive/project.json": `{"test": "true"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "wait", "repo": "me/wait"}, nil)
+	for _, title := range []string{"yes", "no"} {
+		h.post("/api/ask", map[string]string{"project": "wait", "title": title, "known": "FAKE:needpackage FAKE:wardenperson" + title}, nil)
+	}
+	req := func(st api.State, title string) (risk.Request, core.Ask, bool) {
+		for _, r := range st.Requests {
+			if strings.Contains(r.Why, "wardenperson"+title) {
+				for _, a := range st.Asks {
+					if a.ID == r.Ask {
+						return r, a, r.State == "asked"
+					}
+				}
+			}
+		}
+		return risk.Request{}, core.Ask{}, false
+	}
+	st := h.wait("both installs to wait on the person", 3*minute, func(st api.State) bool {
+		_, _, y := req(st, "yes")
+		_, _, n := req(st, "no")
+		return y && n
+	})
+	_, yes, _ := req(st, "yes")
+	_, no, _ := req(st, "no")
+	if strings.Join(yes.Options, "|") != "run|declined" || !strings.Contains(yes.Detail, "install the left-pad package") || !strings.Contains(yes.Detail, "echo apt-get install -y left-pad") {
+		t.Fatalf("Waiting doesn't say what is asked: %+v", yes)
+	}
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "Can I approve the worker installing it?"}, nil)
+	r, _, _ := req(st, "yes")
+	since, _ := json.Marshal(r.Updated)
+	h.wait("the lead to see where the request stands, since when, and how to answer", 2*minute, func(st api.State) bool {
+		return h.replied("lead", `"State":"asked","Warden":"`+r.Warden+`"`)(st) && h.replied("lead", `"Since":`+string(since))(st) && h.replied("lead", "approve "+yes.ID)(st)
+	})
+	for verb, a := range map[string]core.Ask{"approve": yes, "refuse": no} {
+		cmd := exec.Command(bin, verb, a.ID)
+		cmd.Env = append(os.Environ(), "HIVE_HOME="+h.ws.Root, "HIVE_FORGE=local:"+h.forge.Dir)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("hive %s: %v %s", verb, err, out)
+		}
+	}
+	st = h.wait("the approved install to run", 2*minute, func(st api.State) bool {
+		for _, r := range st.Requests {
+			if r.Ask == yes.ID {
+				return r.State == "done"
+			}
+		}
+		return false
+	})
+	h.wait("the approved worker to land", 3*minute, taskStage("wait", "yes", work.StageDone))
+	h.wait("the refused worker to stop", 3*minute, taskStage("wait", "no", work.StageBlocked))
+}
+
 // TestOutsideStep: an ask longer than a label reaches the worker whole, and a
 // path it names outside the checkout goes to a tribunal as a T3 step. Under
 // HIVE_E2E_SANDBOX=auto the worker can't see the path and must still file it.

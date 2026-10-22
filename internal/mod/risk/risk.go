@@ -16,7 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +34,9 @@ const PanelSize = 3
 
 // ExecTimeout bounds one approved step.
 var ExecTimeout = 10 * time.Minute
+
+// WardenTimeout is how long a warden may weigh before the request goes to the person.
+var WardenTimeout = 30 * time.Minute
 
 // Request is an agent's ask for something past its reach.
 type Request struct {
@@ -109,7 +114,8 @@ func New(c *core.Core, mod *modules.Registry, ag *agents.Agents) *Module {
 	c.J.Subscribe(apply)
 	ops := c.Runs.Ops()
 	ops.Register(core.Op{Name: "warden", Help: `{"want","why","steps","tier":"T1|T2|T3","gain":"(optional) large"} -> T1 you weigh yourself; T2 goes to a warden, T3 to a tribunal`, Fn: m.opRequest})
-	ops.Register(core.Op{Name: "decide", Roles: []string{"warden"}, Help: `{"decision":"do|safer|decline|tribunal","reason","script":"exactly what runs (do, tribunal)","gain":"(optional) large"}`, Fn: m.opDecide})
+	ops.Register(core.Op{Name: "decide", Roles: []string{"warden"}, Help: `{"decision":"do|safer|decline|tribunal|person","reason","script":"exactly what runs (do, tribunal; person if you have one)","gain":"(optional) large"}`, Fn: m.opDecide})
+	ops.Register(core.Op{Name: "requests", Help: `{} -> recent requests past the sandbox: who asked, what, why, where each stands`, Fn: m.opRequests})
 	ops.Register(core.Op{Name: "install_module", Roles: []string{"lead"}, Help: `{"url","name"}`, Fn: m.opInstall})
 	c.Person.Handle("request", m.onAnswer)
 	c.Person.Handle("module", m.onModule)
@@ -157,6 +163,27 @@ func (m *Module) List() []Request {
 	m.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })
 	return out
+}
+
+// opRequests shows an agent (the lead, mostly) the newest requests, so it can
+// tell the person what waits on them and how to answer.
+func (m *Module) opRequests(core.Run, json.RawMessage) (any, error) {
+	type view struct {
+		ID, From, Want, Why, State, Warden, Decision, Reason, Outcome, Answer string
+		Since                                                                 time.Time
+	}
+	var out []view
+	for _, r := range m.List() {
+		if len(out) == 20 {
+			break
+		}
+		v := view{r.ID, r.Origin, core.Clip(r.Want, 200), core.Clip(r.Why, 300), r.State, r.Warden, r.Decision, core.Clip(r.Reason, 300), r.Outcome, "", r.Updated}
+		if a, ok := m.C.Person.Get(r.Ask); ok && a.Answer == "" {
+			v.Answer = fmt.Sprintf("waiting on the person: Waiting in the control center, or %s approve %s / %s refuse %s", core.Cmd, a.ID, core.Cmd, a.ID)
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 func (m *Module) get(id string) (Request, bool) {
@@ -220,14 +247,34 @@ func (m *Module) opRequest(r core.Run, args json.RawMessage) (any, error) {
 // ask puts a request in front of the person; the worker's words are quoted.
 func (m *Module) ask(req *Request, why, detail string, options ...string) {
 	body := fmt.Sprintf("%s\n\nAn agent (%s) asked (%s, route %s): %s\n\nWhy: %s\n\nIts proposed steps:\n%s", detail, req.Origin, req.Tier, req.Route, req.Want, req.Why, req.Steps)
+	if req.Reason != "" {
+		body += "\n\nThe warden: " + req.Reason
+	}
 	if req.Script != "" {
-		body = fmt.Sprintf("%s\n\n%s\n\nWhat would run, exactly (sha256 %s):\n%s", detail, req.Reason, core.Short(req.Digest), req.Script)
+		body += fmt.Sprintf("\n\nWhat would run, exactly (sha256 %s):\n%s", core.Short(req.Digest), req.Script)
 	}
 	a := m.C.Person.Ask(core.Ask{Kind: "request", Ref: req.ID, Project: req.Project, From: req.Origin,
 		Title: why + ": " + core.Clip(req.Want, 110), Detail: body, Options: options})
 	req.Ask, req.State = a.ID, "asked"
 	m.save(req)
 }
+
+// toPerson hands what a warden couldn't settle to the person: with a script,
+// run runs exactly it; without one, the person does it and answers done.
+func (m *Module) toPerson(req *Request, why string) {
+	if req.Script != "" {
+		m.ask(req, why, "Run to run exactly this script; decline to leave it.", "run", "declined")
+		return
+	}
+	m.ask(req, why, "Do it yourself and answer done, or decline.", "done", "declined")
+}
+
+// sudoRe finds sudo in a script; sudoOK says whether it works without a
+// password here. A test swaps sudoOK.
+var (
+	sudoRe = regexp.MustCompile(`\bsudo\b`)
+	sudoOK = func() bool { return exec.Command("sudo", "-n", "true").Run() == nil }
+)
 
 // quote fences another agent's words so they read as data.
 func quote(req Request) string {
@@ -290,12 +337,18 @@ func (m *Module) opDecide(r core.Run, args json.RawMessage) (any, error) {
 	case "tribunal":
 		req.Script, req.Digest = a.Script, Digest(a.Script)
 		return "convened; finish now", m.convene(&req)
+	case "person":
+		req.Script = a.Script
+		if a.Script != "" {
+			req.Digest = Digest(a.Script)
+		}
+		m.toPerson(&req, "The warden passed it to you")
 	case "safer", "decline":
 		req.State, req.Outcome = "declined", a.Decision
 		m.save(&req)
 		m.tell(req, fmt.Sprintf("The warden won't do %q as asked (%s): %s", core.Clip(req.Want, 80), a.Decision, a.Reason))
 	default:
-		return nil, errors.New(`decision is do, safer, decline or tribunal`)
+		return nil, errors.New(`decision is do, safer, decline, tribunal or person`)
 	}
 	return "recorded; finish now", nil
 }
@@ -440,10 +493,15 @@ func (m *Module) Tick() {
 	for _, req := range m.List() {
 		switch req.State {
 		case "weighing":
-			if w, ok := m.C.Runs.Get(req.Warden); ok && (w.Terminal() || w.Status == core.StatusQuiet) {
-				req.State, req.Outcome = "failed", "the warden ended without deciding"
-				m.save(&req)
-				m.tell(req, "The warden could not settle it: it ended without deciding.")
+			w, ok := m.C.Runs.Get(req.Warden)
+			late := time.Since(req.Updated) > WardenTimeout
+			if ok && (w.Terminal() || w.Status == core.StatusQuiet || late) {
+				req.Reason = "It ended without deciding."
+				if late {
+					m.C.Runs.Stop(req.Warden, "out of time to weigh the request")
+					req.Reason = "It ran out of time to decide."
+				}
+				m.toPerson(&req, "The warden couldn't decide")
 			}
 		case "tribunal":
 			moved := false
@@ -526,6 +584,11 @@ func (m *Module) execute(id string) {
 		m.ask(&req, "Always yours", "Whoever approved it, this script "+core.AlwaysPerson[core.CeilingHit(req.Script)]+", which is always yours to decide. Run to run exactly this script; decline to leave it.", "run", "declined")
 		m.act.Unlock()
 		m.tell(req, err.Error()+"; the person decides.")
+		return
+	}
+	if sudoRe.MatchString(req.Script) && !sudoOK() {
+		m.ask(&req, "Needs your password", "This step needs sudo and this machine wants a password for it, so the Hive can't run it. Run it yourself in a shell and answer done, or decline.", "done", "declined")
+		m.act.Unlock()
 		return
 	}
 	req.State = "running"
