@@ -16,4 +16,4 @@ Gotchas hit while building. Append; don't rewrite.
 - **[network] the local router's DNS doesn't resolve example.com** here; tests use github.com.
 - **[wsl] Claude Code in WSL** lives in ~/.local/bin (not on non-login PATH), version 2.1.71 here; its help doesn't list `--append-system-prompt-file`, so inside sandboxes the prompt is passed inline.
 - **[go] exec.Cmd.Start can only be called once**, even after it failed ("exec: already started"); a retry with different flags needs a fresh Cmd. Bit us when Windows (GitHub Actions job objects) refuses CREATE_BREAKAWAY_FROM_JOB.
-- **[editing] Git Bash heredocs collapse `\` to `\`** even with a quoted delimiter here, so Python edits fed through them lose escapes; write the script to a file with the Write tool, or use Edit.
+- **[editing] Git Bash heredocs collapse a doubled backslash to one** even with a quoted delimiter here, so Python edits fed through them lose escapes; write the script to a file with the Write tool, or use Edit.

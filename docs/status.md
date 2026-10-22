@@ -8,6 +8,9 @@ Done:
   - e2e (real daemon, fake harness, local forge): ask→merge with review, projects, failing tests stop with PR open, score drop → revert + lesson quoted in next brief, sweep files an ask, kill/restart at every stage with no duplicates, usage-limit park/resume, crash retry, request → person → agent, module install + update, self-release. Passes both bare and inside the WSL sandbox.
   - WSL sandbox isolation checked by hand: /mnt, /home, WSL interop hidden; /etc, /usr read-only; only checkout writable; public HTTPS via proxy 200; local services 403; no direct network.
 
+- Release v0.1.0 published with binaries (linux/darwin amd64+arm64, windows amd64). One-line install via `gh api …/install.ps1 | Out-String | iex` verified into a scratch dir; installs `hive-v0`.
+- CI green on Windows, Ubuntu and macOS (vet, unit, e2e). Claude Code inside the WSL sandbox verified up to the API (invalid token → 401).
+
 Not verified:
 - Live agents with real Claude Code (no plan usage spent yet). Sandboxed live runs read a short-lived token from Claude Code's credential file at run time; not exercised.
 - The GitHub forge path (gh issue/PR/merge) end to end; only the local forge is exercised.
