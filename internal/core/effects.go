@@ -500,6 +500,8 @@ type Change struct {
 	Small     bool     `json:"small"`
 	Protected []string `json:"protected,omitempty"`
 	Diff      string   `json:"-"`
+	// ProtectedDiff is the diff of the protected files alone, shown to the person who approves it.
+	ProtectedDiff string `json:"-"`
 }
 
 var docExt = []string{".md", ".txt", ".rst", ".adoc"}
@@ -547,6 +549,9 @@ func (e *Effects) Classify(p Project, mainSHA, sha string) (Change, error) {
 	}
 	c.Small = docsOnly && len(c.Files) > 0 && c.Lines <= cfg.SmallMax && len(c.Protected) == 0
 	c.Diff, _ = Git(dir, "diff", base, sha)
+	if len(c.Protected) > 0 {
+		c.ProtectedDiff, _ = Git(dir, append([]string{"diff", "--no-renames", base, sha, "--"}, c.Protected...)...)
+	}
 	return c, nil
 }
 

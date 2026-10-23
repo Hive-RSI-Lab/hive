@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -111,5 +112,58 @@ func TestViewsFitTheScreen(t *testing.T) {
 		}
 		m.Update(keys("?")[0])
 		checkWidth(t, m.View(), w, h, "help")
+	}
+}
+
+func protectedAsk() core.Ask {
+	var diff strings.Builder
+	diff.WriteString("diff --git a/.hive/goals.md b/.hive/goals.md\n--- a/.hive/goals.md\n+++ b/.hive/goals.md\n@@ -1,1 +1,60 @@\n")
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&diff, "+- goal %d\n", i)
+	}
+	return core.Ask{ID: "a2", Kind: "merge", Ref: "t1@abc", Title: `Merge "implement"? It changes .hive/goals.md`,
+		Detail: ".hive/goals.md are yours to merge.", Options: []string{"merge", "leave open"}, Diff: diff.String(), Asked: time.Now()}
+}
+
+func TestWaitingShowsTheDiff(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {80, 24}, {50, 16}} {
+		w, h := size[0], size[1]
+		m := testModel(w, h)
+		m.st.Asks = []core.Ask{protectedAsk()}
+		m.section = secWaiting
+		v := ansi.Strip(m.View())
+		checkWidth(t, m.View(), w, h, "waiting with a diff")
+		if !strings.Contains(v, "+- goal 0") || strings.Contains(v, "+- goal 59") || !strings.Contains(v, "d the whole diff") || !strings.Contains(v, "leave open") {
+			t.Fatalf("%dx%d: Waiting should show the start of the diff, clipped, and the options:\n%s", w, h, v)
+		}
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+		if len(m.stack) != 1 || m.stack[0].kind != "diff" {
+			t.Fatalf("d should open the whole diff: %+v", m.stack)
+		}
+		for i := 0; i < 80; i++ {
+			m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		}
+		checkWidth(t, m.View(), w, h, "the whole diff")
+		if v := ansi.Strip(m.View()); !strings.Contains(v, "+- goal 59") {
+			t.Fatalf("%dx%d: scrolling the whole diff should reach its end:\n%s", w, h, v)
+		}
+	}
+}
+
+func TestChatJumpsToItsAsk(t *testing.T) {
+	m := testModel(80, 24)
+	m.st.Projects[0].Tasks[0].Chat = "lead"
+	m.st.Asks = append(m.st.Asks, protectedAsk()) // a1 is someone else's; a2 is about t1, a task of this chat
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "2 waiting on you · → then a to answer") {
+		t.Fatalf("the chat should say what's waiting:\n%s", v)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if m.section != secWaiting || m.st.Asks[m.waitSel].ID != "a2" || m.optSel != 0 {
+		t.Fatalf("a should open Waiting on this chat's ask: section %d, ask %d", m.section, m.waitSel)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.composing {
+		t.Fatal("Enter in Waiting should answer, not write")
 	}
 }

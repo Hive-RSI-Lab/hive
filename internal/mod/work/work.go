@@ -596,8 +596,9 @@ func (m *Module) test(t *Task, p core.Project) error {
 		m.save(t, "waiting on the person: changes "+strings.Join(ch.Protected, ", "))
 		m.C.Person.Ask(core.Ask{Kind: "merge", Ref: t.ID + "@" + t.SHA, Project: p.Name, From: t.Worker,
 			Title:  fmt.Sprintf("Merge %q? It changes %s", t.Label(), strings.Join(ch.Protected, ", ")),
-			Detail: fmt.Sprintf("%s\n\nPR: %s", strings.Join(ch.Protected, ", ")+" are yours to merge.", t.PR.URL), Options: []string{"merge", "leave open"}})
-		m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("%q changes %s, which is yours to approve. It's waiting on you: %s", t.Label(), strings.Join(ch.Protected, ", "), t.PR.URL))
+			Detail: fmt.Sprintf("%s\n\nPR: %s", strings.Join(ch.Protected, ", ")+" are yours to merge.", t.PR.URL), Options: []string{"merge", "leave open"},
+			Diff: ch.ProtectedDiff[:min(len(ch.ProtectedDiff), 1<<20)]})
+		m.Chat.Notify(t.Chat, t.Thread, approveNotice(t.Label(), ch.Protected, t.PR.URL))
 	case ch.Small || m.C.Effects.Reviewed(p.Name, t.SHA):
 		t.Stage = StageMerging
 		m.save(t, "tests passed; "+map[bool]string{true: "small change, no read needed", false: "already read"}[ch.Small])
@@ -606,6 +607,11 @@ func (m *Module) test(t *Task, p core.Project) error {
 		m.save(t, "tests passed; asking for a read")
 	}
 	return nil
+}
+
+// approveNotice tells the person a change is theirs and where to answer it.
+func approveNotice(label string, protected []string, url string) string {
+	return fmt.Sprintf("%q changes %s, which is yours to approve. Answer it in the control center's Waiting section, where you see the diff: in this chat, → then a. The PR: %s", label, strings.Join(protected, ", "), url)
 }
 
 func passFail(ok bool) string {

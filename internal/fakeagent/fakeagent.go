@@ -1,7 +1,7 @@
 // Package fakeagent is a scripted agent that speaks Claude Code's
 // stream-json and uses the real mailbox. Keywords in the brief steer it
 // (FAKE:block, FAKE:breaktests, FAKE:lowerscore, FAKE:reviewfix, FAKE:crash,
-// FAKE:limit, FAKE:needpackage, FAKE:rmoutside <path>, FAKE:inject, and FAKE:warden*/FAKE:panel* for the risk path), so tests and the release
+// FAKE:limit, FAKE:needpackage, FAKE:rmoutside <path>, FAKE:inject, FAKE:goals, and FAKE:warden*/FAKE:panel* for the risk path), so tests and the release
 // dry run drive every path of the Hive without spending plan usage.
 package fakeagent
 
@@ -232,6 +232,9 @@ func worker(all, prompt, system string) (string, error) {
 		os.WriteFile("score.txt", []byte("9\n"), 0o644)
 	case strings.Contains(all, "FAKE:docs"):
 		appendFile("NOTES.md", "- a small doc change\n")
+	case strings.Contains(all, "FAKE:goals"): // a protected file, so the merge waits on the person
+		os.MkdirAll(".hive", 0o755)
+		appendFile(".hive/goals.md", "- a goal the person approves\n")
 	case strings.Contains(prompt, "conflict"):
 		if out, err := run("git", "fetch", "-q", filepath.Join(os.Getenv("HIVE_RUN"), "main.bundle"), "main"); err != nil {
 			return "", fmt.Errorf("fetch main: %v %s", err, out)

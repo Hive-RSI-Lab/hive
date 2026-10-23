@@ -193,8 +193,31 @@ func (m *model) keyChats(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n", "i":
 		return m, m.compose("", "")
+	case "a":
+		m.toWaiting()
 	}
 	return m, nil
+}
+
+// toWaiting opens Waiting on what this chat was told is waiting on the person.
+func (m *model) toWaiting() {
+	if len(m.st.Asks) == 0 {
+		return
+	}
+	cid := m.currentChatID()
+	chatOf := map[string]string{}
+	for _, p := range m.st.Projects {
+		for _, t := range p.Tasks {
+			chatOf[t.ID] = t.Chat
+		}
+	}
+	m.section, m.stack, m.waitSel, m.optSel = secWaiting, nil, 0, 0
+	for i, a := range m.st.Asks {
+		if id, _, _ := strings.Cut(a.Ref, "@"); chatOf[id] == cid {
+			m.waitSel = i
+			return
+		}
+	}
 }
 
 func (m *model) compose(thread, initial string) tea.Cmd {
@@ -296,6 +319,9 @@ func (m *model) viewThreads(w int) []string {
 		header += "  " + stDim.Render(clip(c.LeadStatus, w/2))
 	}
 	lines := []string{header, ""}
+	if n := len(m.st.Asks); n > 0 {
+		lines[1] = stWarn.Render(fmt.Sprintf("%d waiting on you · %s", n, map[bool]string{true: "a to answer", false: "→ then a to answer"}[m.chatFocus == 1]))
+	}
 	ts := threads(m.msgs[c.ID])
 	if len(ts) == 0 {
 		hint := "Nothing here yet. Start typing to write to the lead."

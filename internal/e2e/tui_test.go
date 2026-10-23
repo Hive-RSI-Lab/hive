@@ -15,6 +15,7 @@ import (
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/api"
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
 // term is a tmux server of the test's own, holding one window that a person
@@ -144,7 +145,8 @@ func (x *term) shot(name string) { x.t.Helper(); x.t.Logf("screen: %s\n%s", name
 
 // TestControlCenterInTmux drives the built hive in a real terminal the way a
 // person does: the first run on a clean HOME, a chat that lands work, the
-// dashboard, approving and declining from Waiting, module access, settings,
+// dashboard, approving and declining from Waiting, merging a goals change
+// reached from the chat, module access, settings,
 // quitting with the Hive still running, reopening, and resizing. Services are
 // stubbed on PATH, so nothing is installed on the account running the test.
 func TestControlCenterInTmux(t *testing.T) {
@@ -318,6 +320,42 @@ func TestControlCenterInTmux(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
+	// A change to the goals is the person's to merge: the chat says so and
+	// one key opens it in Waiting, with the diff, where Enter merges it.
+	x.keys("BTab", "BTab")
+	x.wait(10*time.Second, "Hive › Chats")
+	x.typ("edit the goals FAKE:goals")
+	x.keys("Enter")
+	x.wait(time.Minute, "Understood: edit the goa")
+	x.wait(3*time.Minute, "1 waiting on you · → then a to answer")
+	x.shot("chat says a change waits on the person")
+	x.keys("Right", "a")
+	x.wait(10*time.Second, "Hive › Waiting", "It changes .hive/goals.md", "+- a goal the person approves", "merge    leave open")
+	x.shot("the goals change in Waiting")
+	x.keys("d")
+	x.wait(10*time.Second, "Hive › Waiting › what it changes", "+++ b/.hive/goals.md")
+	x.keys("Escape", "Enter")
+	x.wait(10*time.Second, "Nothing is waiting on you.")
+	for i := 0; ; i++ {
+		st, _ := c.State()
+		merged := false
+		for _, p := range st.Projects {
+			for _, tk := range p.Tasks {
+				merged = merged || strings.Contains(tk.Label(), "FAKE:goals") && (tk.Stage == work.StageMerged || tk.Stage == work.StageDone)
+			}
+		}
+		if merged {
+			break
+		}
+		if len(st.Asks) > 0 && i%10 == 0 { // main moved and the rebased commit asks again
+			x.keys("Enter")
+		}
+		if i == 600 {
+			t.Fatalf("the approved goals change never merged: %+v", st.Projects)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	// Modules: the defaults are listed; kb's access is removed from every
 	// project, granted to textkit alone, removed, and given back to all.
 	x.keys("Tab")
@@ -384,7 +422,7 @@ func TestControlCenterInTmux(t *testing.T) {
 	x.shot("hive status after quitting")
 	x.typ("hive")
 	x.keys("Enter")
-	x.wait(30*time.Second, "Hive › Chats", "Merged: implement capitalize_words")
+	x.wait(30*time.Second, "Hive › Chats", "Merged: edit the goals")
 	x.frame(80, 24, "reopened")
 	x.keys("q")
 }

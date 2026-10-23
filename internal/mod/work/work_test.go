@@ -126,3 +126,11 @@ func TestDoneProjectGone(t *testing.T) {
 		t.Fatalf("stage %q, issue open %v, log %v", task.Stage, task.IssueOpen, task.Log)
 	}
 }
+
+func TestApproveNoticeSendsToWaitingFirst(t *testing.T) {
+	n := approveNotice("edit goals", []string{".hive/goals.md"}, "https://github.com/me/p/pull/2")
+	w, pr := strings.Index(n, "Waiting"), strings.Index(n, "https://github.com/me/p/pull/2")
+	if w < 0 || pr < w || !strings.Contains(n, "→ then a") || !strings.Contains(n, ".hive/goals.md") {
+		t.Fatalf("the notice should name Waiting and the key before the PR link: %q", n)
+	}
+}

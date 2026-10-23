@@ -483,11 +483,11 @@ func (m *model) footer() string {
 		if m.chatFocus == 0 {
 			return "↑↓ chat · type or enter to write · → threads · space collapse · tab section · q quit"
 		}
-		return "↑↓ thread · enter expand · r reply · n new · ← chats · q quit"
+		return "↑↓ thread · enter expand · r reply · n new · a answer what's waiting · ← chats · q quit"
 	case secDash:
 		return "↑↓ move · → or enter open · ← collapse · tab section · q quit"
 	case secWaiting:
-		return "↑↓ item · ←→ option · enter answer · q quit"
+		return "↑↓ item · ←→ option · enter answer · d whole diff · q quit"
 	case secModules:
 		return "↑↓ module · enter details · q quit"
 	case secSettings:
@@ -505,6 +505,8 @@ func helpLines() []string {
 		"  space             expand or collapse",
 		"  typing            in Chats, starts a message to the selected chat",
 		"  r / n             reply in a thread / new thread",
+		"  a                 in a chat, answer what's waiting on you",
+		"  d                 in Waiting, the whole diff of a change",
 		"  q                 quit the control center; the Hive keeps working",
 		"", stDim.Render("  any key to close")}
 }

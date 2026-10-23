@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/api"
@@ -500,6 +501,8 @@ func (m *model) viewDetail(d *detail) []string {
 		}
 		lines = append(lines, "", stDim.Render("space grant or remove"))
 		return lines
+	case "diff":
+		lines = append(lines, diffLines(d.text, w)...)
 	default:
 		lines = append(lines, wrap(d.text, w)...)
 	}
@@ -561,6 +564,10 @@ func (m *model) keyWaiting(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.waitSel < len(asks) && m.optSel < len(asks[m.waitSel].Options)-1 {
 			m.optSel++
 		}
+	case "d":
+		if m.waitSel < len(asks) && asks[m.waitSel].Diff != "" {
+			return m, m.push(detail{kind: "diff", title: "what it changes", text: asks[m.waitSel].Diff})
+		}
 	case "enter":
 		if m.waitSel < len(asks) {
 			a := asks[m.waitSel]
@@ -589,6 +596,14 @@ func (m *model) viewWaiting() []string {
 		lines = append(lines, title)
 		if i == m.waitSel {
 			lines = append(lines, indent(wrap(a.Detail, m.w-6), "    ")...)
+			if a.Diff != "" { // as much of the diff as leaves the title and options on screen
+				diff := diffLines(a.Diff, m.w-6)
+				n := max(3, m.bodyHeight()-len(lines)+sel-4)
+				if len(diff) > n {
+					diff = append(diff[:n-1], stDim.Render(fmt.Sprintf("… %d more lines · d the whole diff", len(diff)-n+1)))
+				}
+				lines = append(lines, indent(diff, "    ")...)
+			}
 			var opts []string
 			for j, o := range a.Options {
 				if j == m.optSel {
@@ -597,11 +612,34 @@ func (m *model) viewWaiting() []string {
 					opts = append(opts, " "+o+" ")
 				}
 			}
+			sel = len(lines) // keep the options in view
 			lines = append(lines, "    "+strings.Join(opts, "  "))
 		}
 		lines = append(lines, "")
 	}
 	return window(lines, sel, m.bodyHeight())
+}
+
+// diffLines colours a unified diff and breaks its lines at w cells.
+func diffLines(diff string, w int) []string {
+	var out []string
+	for _, l := range strings.Split(strings.TrimRight(diff, "\n"), "\n") {
+		st := lipgloss.NewStyle()
+		switch {
+		case strings.HasPrefix(l, "+++"), strings.HasPrefix(l, "---"), strings.HasPrefix(l, "diff "), strings.HasPrefix(l, "index "):
+			st = stTitle
+		case strings.HasPrefix(l, "+"):
+			st = stGood
+		case strings.HasPrefix(l, "-"):
+			st = stBad
+		case strings.HasPrefix(l, "@@"):
+			st = stAccent
+		}
+		for _, p := range strings.Split(ansi.Hardwrap(strings.ReplaceAll(l, "\t", "    "), max(10, w), true), "\n") {
+			out = append(out, st.Render(p))
+		}
+	}
+	return out
 }
 
 // ---- modules ---------------------------------------------------------------
