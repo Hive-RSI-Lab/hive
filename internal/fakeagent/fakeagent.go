@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,6 +80,15 @@ func Main(argv []string) int {
 	if budget > 0 && strings.Contains(all, "FAKE:spendall") { // as Claude does at --max-budget-usd
 		emit(map[string]any{"type": "result", "subtype": "error_max_budget_usd", "is_error": true, "session_id": session, "total_cost_usd": budget + 0.01})
 		return 0
+	}
+
+	// FAKE:stall<role> hangs the role's first turn; FAKE:slow<role>:<s> takes s seconds.
+	if strings.Contains(all, "FAKE:stall"+role) && !resume {
+		time.Sleep(10 * time.Minute)
+	}
+	if m := regexp.MustCompile(`FAKE:slow` + role + `:(\d+)`).FindStringSubmatch(all); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		time.Sleep(time.Duration(n) * time.Second)
 	}
 
 	text, structured := "ok", any(nil)
@@ -271,6 +281,8 @@ func worker(all, prompt, system string) (string, error) {
 		os.WriteFile("score.txt", []byte("9\n"), 0o644)
 	case strings.Contains(all, "FAKE:goals"):
 		appendFile(".hive/goals.md", "- a goal the worker wrote down\n")
+	case strings.Contains(all, "FAKE:stallcheck"):
+		os.WriteFile("STALL", []byte("the test command waits while this exists\n"), 0o644)
 	case strings.Contains(all, "FAKE:docs"):
 		appendFile("NOTES.md", "- a small doc change\n")
 	case strings.Contains(prompt, "conflict"):

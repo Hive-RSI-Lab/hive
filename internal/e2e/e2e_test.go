@@ -573,6 +573,65 @@ func toldAbout(what string) func(api.State) bool {
 	}
 }
 
+// The Hive notices its own stalls. A worker, a reviewer and a check that stop
+// moving for longer than their stage takes in this Hive are restarted or
+// handed to the lead, each with one alert that updates when it moves on; a
+// worker slower than the floor but within this Hive's history is left alone.
+func TestStalls(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	cfg := h.ws.LoadConfig()
+	cfg.StallFloorSeconds = 20
+	h.ws.SaveConfig(cfg)
+	h.seed("me/stall", map[string]string{".hive/project.json": `{"test": "if [ -f STALL ]; then sleep 60; fi"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "stall", "repo": "me/stall"}, nil)
+	// History: a worker here has taken about 13 seconds (8 asleep), so the limit is about 39 without moving.
+	for title, known := range map[string]string{"history one": "FAKE:slowworker:8", "history two": ""} {
+		h.post("/api/ask", map[string]string{"project": "stall", "title": title, "known": known}, nil)
+		h.wait(title+" to land", 3*minute, taskStage("stall", title, work.StageDone))
+	}
+
+	asks := map[string]string{"hung worker": "FAKE:stallworker", "hung reviewer": "FAKE:stallreviewer", "hung check": "FAKE:stallcheck", "slow worker": "FAKE:slowworker:22"}
+	for title, known := range asks {
+		h.post("/api/ask", map[string]string{"project": "stall", "title": title, "known": known}, nil)
+	}
+	for title := range asks {
+		h.wait(title+" to land", 4*minute, taskStage("stall", title, work.StageDone))
+	}
+	st := h.state()
+	alerts := map[string][]string{}
+	for _, a := range st.Alerts {
+		if a.Kind == "stall" {
+			alerts[a.Ref] = append(alerts[a.Ref], a.Text)
+		}
+	}
+	for title, did := range map[string]string{"hung worker": "restarted its turn", "hung reviewer": "restarted its turn", "hung check": "handed it to the lead"} {
+		tk, _ := task(st, "stall", title)
+		if got := alerts["task:"+tk.ID]; len(got) != 1 || !strings.Contains(got[0], did) || !strings.Contains(got[0], "moved on") {
+			t.Fatalf("%s: want one alert that says %q and that it moved on, got %q", title, did, got)
+		}
+		workers := 0
+		for _, r := range st.Runs {
+			if r.Role == "worker" && r.Task == tk.ID {
+				workers++
+			}
+		}
+		if workers != 1 {
+			t.Fatalf("%s: a restart started %d workers", title, workers)
+		}
+	}
+	if slow, _ := task(st, "stall", "slow worker"); len(alerts["task:"+slow.ID]) != 0 {
+		t.Fatalf("a slow worker within this Hive's history was flagged: %q", alerts["task:"+slow.ID])
+	}
+	told := false
+	for _, msg := range h.messages("lead") {
+		told = told || strings.Contains(msg.Text, "Stuck:") && strings.Contains(msg.Text, "hung check")
+	}
+	if !told {
+		t.Fatal("the lead was not told about the hung check")
+	}
+}
+
 // A request past the sandbox goes to a warden, which runs its script, and the
 // outcome reaches the agent. At autonomy 2 a warden approves a module install
 // and a goals change, and the person is told after. A module updates when its
