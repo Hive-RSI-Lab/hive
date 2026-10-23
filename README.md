@@ -31,7 +31,7 @@ A repository you name that doesn't exist yet starts with no test and no score: `
       "score": {"command": "./score.sh", "direction": "higher", "tolerance": 0.5}
     }
 
-The score command's output ends with one number; `direction` says whether higher or lower is better, and `tolerance` is how much noise to ignore. The demo project comes with both.
+The score command's output ends with one number; `direction` says whether higher or lower is better, and `tolerance` is how much noise to ignore. List what the score reads in `paths` (a `./` file the command names counts too, as a best guess). Those are the score itself: a change to one waits for your approval, and its merge starts a new baseline instead of being compared with numbers the old score gave. The demo project comes with both.
 
 ## Models
 

@@ -69,10 +69,12 @@ func (m *Module) StepBacks(project string) []StepBack {
 
 func (m *Module) saveStepBack(s StepBack) { m.C.J.MustAppend("stepback.saved", s) }
 
-// start is the project's first kept measure: the seed every setup starts from.
+// start is the project's first kept measure under the score that gave its
+// best: the seed every setup starts from.
 func (m *Module) start(project string) (Measurement, bool) {
+	k, _ := m.kept(project)
 	for _, x := range m.Scores(project) {
-		if x.Kept && x.Score != nil {
+		if x.Kept && x.Score != nil && x.Version == k.Version {
 			return x, true
 		}
 	}
@@ -337,6 +339,10 @@ func (m *Module) score(s StepBack, r core.Run) {
 	}
 	if err != nil {
 		m.fail(s, "the experiment's score can't count: "+err.Error())
+		return
+	}
+	if k, _ := m.kept(p.Name); k.Version != m.C.Effects.ScoreVersion(p, sha, *cfg.Score) {
+		m.fail(s, "the score changed since the experiment's start, so its number can't be compared with the Hive's best")
 		return
 	}
 	c := m.C.Effects.RunCheck(p, sha, "score", cfg.Score.Command)
