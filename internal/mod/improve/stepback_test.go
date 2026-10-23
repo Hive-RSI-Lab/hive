@@ -132,7 +132,8 @@ func TestIsolatedFaultAsksThePerson(t *testing.T) {
 	}
 }
 
-// An isolated project's step-back reads a digest of that project alone.
+// An isolated project's step-back reads a digest of that project alone, and
+// no other digest reads it.
 func TestDigestOfOneProject(t *testing.T) {
 	m := rig(t)
 	for _, name := range []string{"p", "q"} {
@@ -147,12 +148,12 @@ func TestDigestOfOneProject(t *testing.T) {
 	all, one := m.Digest(0, ""), m.Digest(0, "p")
 	for _, s := range []string{"## Project q", "SAID-q notes", "BLOCKED-q", "CHAT-q"} {
 		if !strings.Contains(all, s) || strings.Contains(one, s) {
-			t.Fatalf("%q must be in the whole digest only:\nall:\n%s\none:\n%s", s, all, one)
+			t.Fatalf("%q must be in the shared digest only:\nall:\n%s\none:\n%s", s, all, one)
 		}
 	}
 	for _, s := range []string{"## Project p", "SAID-p notes", "BLOCKED-p", "CHAT-p"} {
-		if !strings.Contains(one, s) {
-			t.Fatalf("%q is missing from p's digest:\n%s", s, one)
+		if !strings.Contains(one, s) || strings.Contains(all, s) {
+			t.Fatalf("%q must be in the isolated project's own digest only:\nall:\n%s\none:\n%s", s, all, one)
 		}
 	}
 }
