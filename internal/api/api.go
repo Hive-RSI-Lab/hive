@@ -47,6 +47,7 @@ type State struct {
 	StepBacks  []improve.StepBack `json:"stepbacks"`
 	Asks       []core.Ask         `json:"asks"`
 	Alerts     []Alert            `json:"alerts"`
+	Updated    *Updated           `json:"updated,omitempty"`
 	Jobs       []system.JobState  `json:"jobs"`
 	Wakeups    []system.Wakeup    `json:"wakeups"`
 	Modules    []ModuleView       `json:"modules"`
@@ -63,6 +64,13 @@ type ProjectView struct {
 	Tasks  []work.Task           `json:"tasks"`
 	Scores []improve.Measurement `json:"scores"`
 	Best   *float64              `json:"best,omitempty"`
+}
+
+// Updated is the update that brought in this version, with its release notes.
+type Updated struct {
+	Seq   int64  `json:"seq"`
+	To    string `json:"to"`
+	Notes string `json:"notes"`
 }
 
 // Alert is a ledger alert.

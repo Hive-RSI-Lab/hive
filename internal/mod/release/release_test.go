@@ -16,6 +16,9 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 )
 
+// releases is the API's list of me/hive's releases; "" answers 404.
+var releases string
+
 // serve is a release site with tag as the latest release of me/hive, holding
 // each asset with a checksums.txt over them (lie corrupts the sums). The repo's
 // old name, old/name, redirects to it as GitHub does after a rename.
@@ -36,6 +39,8 @@ func serve(t *testing.T, tag string, assets map[string]string, lie bool) {
 		case p == "/me/hive/releases/latest":
 			http.Redirect(w, r, "/me/hive/releases/tag/"+tag, http.StatusFound)
 		case p == "/me/hive/releases/tag/"+tag:
+		case p == "/repos/me/hive/releases" && releases != "":
+			w.Write([]byte(releases))
 		case p == "/me/hive/releases/download/"+tag+"/checksums.txt":
 			w.Write([]byte(sums))
 		case strings.HasPrefix(p, "/me/hive/releases/download/"+tag+"/") && assets[filepath.Base(p)] != "":
@@ -45,9 +50,9 @@ func serve(t *testing.T, tag string, assets map[string]string, lie bool) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	site := Site
-	t.Cleanup(func() { Site = site })
-	Site = srv.URL
+	site, api, rels := Site, API, releases
+	t.Cleanup(func() { Site, API, releases = site, api, rels })
+	Site, API = srv.URL, srv.URL
 }
 
 // releaseAt is the release module in a build stamped version, following repo,
@@ -92,12 +97,61 @@ func TestUpdateThroughRenamedRepo(t *testing.T) {
 	serve(t, "v9.9.9", newBuild(), false)
 	m, exe := releaseAt(t, "v0.1.2", "old/name")
 	msg, err := m.Update()
-	if raw, _ := os.ReadFile(exe); err != nil || msg != "updated to v9.9.9" || string(raw) != "new" {
+	if raw, _ := os.ReadFile(exe); err != nil || !strings.HasPrefix(msg, "updated to v9.9.9\n") || string(raw) != "new" {
 		t.Fatalf("update: %q, %v, binary %q", msg, err, raw)
 	}
 	core.Version = "v9.9.9"
 	if msg, err := m.Update(); err != nil || msg != "already on v9.9.9" {
 		t.Fatalf("second update: %q, %v", msg, err)
+	}
+}
+
+const releaseList = `[
+ {"tag_name": "v9.9.9", "body": "Faster merges.", "html_url": "https://example.com/me/hive/releases/tag/v9.9.9"},
+ {"tag_name": "v9.9.8", "body": "Fixed the lead's chat.", "html_url": "https://example.com/me/hive/releases/tag/v9.9.8"},
+ {"tag_name": "v0.1.2", "body": "Already installed.", "html_url": "https://example.com/me/hive/releases/tag/v0.1.2"}
+]`
+
+// hive update names the new version's notes and its page, and journals them
+// for the control center.
+func TestUpdateShowsNotes(t *testing.T) {
+	serve(t, "v9.9.9", newBuild(), false)
+	releases = releaseList
+	m, _ := releaseAt(t, "v9.9.8", "me/hive")
+	msg, err := m.Update()
+	if err != nil || !strings.Contains(msg, "Faster merges.") || !strings.Contains(msg, "releases/tag/v9.9.9") || strings.Contains(msg, "lead's chat") {
+		t.Fatalf("update: %q, %v", msg, err)
+	}
+	var got struct{ Notes string }
+	m.C.J.Replay(func(e core.Event) {
+		if e.Kind == "hive.updated" {
+			e.Decode(&got)
+		}
+	})
+	if !strings.Contains(got.Notes, "Faster merges.") {
+		t.Fatalf("journaled notes: %q", got.Notes)
+	}
+}
+
+// An update that skips versions shows each skipped version's notes too.
+func TestUpdateShowsSkippedNotes(t *testing.T) {
+	serve(t, "v9.9.9", newBuild(), false)
+	releases = releaseList
+	m, _ := releaseAt(t, "v0.1.2", "me/hive")
+	msg, err := m.Update()
+	if err != nil || !strings.Contains(msg, "Faster merges.") || !strings.Contains(msg, "Fixed the lead's chat.") || strings.Contains(msg, "Already installed.") {
+		t.Fatalf("update: %q, %v", msg, err)
+	}
+}
+
+// Notes that can't be fetched still update, and link the releases page.
+func TestUpdateWithoutNotesLinksThem(t *testing.T) {
+	serve(t, "v9.9.9", newBuild(), false)
+	releases = ""
+	m, exe := releaseAt(t, "v0.1.2", "me/hive")
+	msg, err := m.Update()
+	if raw, _ := os.ReadFile(exe); err != nil || string(raw) != "new" || !strings.HasSuffix(msg, Site+"/me/hive/releases") {
+		t.Fatalf("update: %q, %v, binary %q", msg, err, raw)
 	}
 }
 
@@ -121,7 +175,7 @@ func TestAutoUpdateWaitsOutAMerge(t *testing.T) {
 		t.Fatalf("updated mid-merge: %q", msg)
 	}
 	merging = false
-	if msg, err := m.AutoUpdate(); err != nil || msg != "updated to v9.9.9" {
+	if msg, err := m.AutoUpdate(); err != nil || !strings.HasPrefix(msg, "updated to v9.9.9\n") {
 		t.Fatalf("after the merge: %q, %v", msg, err)
 	}
 	if raw, _ := os.ReadFile(exe); string(raw) != "new" {

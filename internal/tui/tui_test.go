@@ -308,3 +308,28 @@ func TestSettingsShowsTheConfigLoadError(t *testing.T) {
 		t.Fatalf("no load error on Settings:\n%s", view)
 	}
 }
+
+// After a self-update the daemon's state carries the new version's notes:
+// they show once, any key dismisses them, and a notice already seen stays away.
+func TestUpdateNoticeShowsOnce(t *testing.T) {
+	m := testModel(100, 24)
+	m.seen = 10
+	st := sample()
+	st.Updated = &api.Updated{Seq: 5, To: "v0.1.3", Notes: "old notes"}
+	m.Update(stateMsg{st: st})
+	if view := m.View(); strings.Contains(view, "old notes") {
+		t.Fatalf("a notice seen before shows again:\n%s", view)
+	}
+	st.Updated = &api.Updated{Seq: 12, To: "v0.1.4", Notes: "v0.1.4: https://github.com/me/hive/releases/tag/v0.1.4\nFixed the thing"}
+	m.Update(stateMsg{st: st})
+	view := m.View()
+	checkWidth(t, view, 100, 24, "update notice")
+	if !strings.Contains(view, "Updated to v0.1.4") || !strings.Contains(view, "Fixed the thing") || !strings.Contains(view, "releases/tag/v0.1.4") {
+		t.Fatalf("no update notice:\n%s", view)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m.Update(stateMsg{st: st})
+	if view := m.View(); strings.Contains(view, "Fixed the thing") {
+		t.Fatalf("notice back after dismissing:\n%s", view)
+	}
+}
