@@ -304,15 +304,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case d == 0 || msg.Action != tea.MouseActionPress || m.help || m.showSince || m.notice != nil:
 		case len(m.stack) > 0:
-			if top := &m.stack[len(m.stack)-1]; top.kind == "module" { // the list follows the selection
+			top := &m.stack[len(m.stack)-1]
+			if top.kind == "module" { // the list follows the selection
 				key := "up"
 				if d > 0 {
 					key = "down"
 				}
 				return m.keyDetailAction(top, key)
-			} else {
-				top.scroll = max(0, top.scroll+d)
 			}
+			top.scroll = max(0, top.scroll+d)
 		case m.section == secChats:
 			m.scrollBy(d)
 		}
@@ -613,7 +613,7 @@ func helpLines() []string {
 		"  space             expand or collapse",
 		"  PgUp PgDn         in Chats, scroll the thread pane a page",
 		"  Home End          in Chats, jump to the top or end of the thread pane",
-		"  mouse wheel       scroll the thread pane or an open log; Shift+drag selects text",
+		"  mouse wheel       scroll the thread pane or an open log (on a module, move the selection); Shift+drag selects text",
 		"  typing            in Chats, starts a message to the selected chat",
 		"  r / n             reply in a thread / new thread",
 		"  q                 quit the control center; the Hive keeps working",
