@@ -65,6 +65,7 @@ func New(ws core.Workspace, forge core.Forge) (*App, error) {
 		}
 		return "started " + s.ID, nil
 	}})
+	a.System.Register(system.Job{Name: "improve.stepback", Fn: func() (string, error) { return a.Improve.RotateStepBacks(), nil }})
 	a.System.Register(system.Job{Name: "kb.file", Fn: func() (string, error) {
 		id, err := a.KB.File()
 		if err != nil {
@@ -103,6 +104,7 @@ func (a *App) Tick() {
 	a.Work.Tick()
 	a.Improve.Tick()
 	a.Improve.TickSweeps()
+	a.Improve.TickStepBacks()
 	a.KB.Tick()
 	a.System.Tick()
 	a.Risk.Tick()
