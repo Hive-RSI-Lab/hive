@@ -10,15 +10,15 @@
    lead           │   Agents
    writer         │     harness                     claude
    reviewer    ●  │     model                       sonnet
- ▾ hive-web       │     reviewer model              opus
-   lead        ●  │     review rounds               3
-   worker-2       │
-   reviewer       │   Schedules
-   tribunal       │     hive.update                 every 6h
- ▸ website        │     improve.stepback            every 72h
+ ▾ hive-web       │     lead model                  opus
+   lead        ●  │     reviewer model              opus
+   worker-2       │     review rounds               3
+   reviewer       │
+   tribunal       │   Schedules
+ ▸ website        │     hive.update                 every 6h
+                  │     improve.stepback            every 72h
                   │     improve.sweep               every 12h
                   │     kb.file                     daily 04:00
                   │     modules.update              every 24h
-                  │
 ──────────────────┴─────────────────────────────────────────────────────────────
  ↑↓ move   enter change   tab sidebar

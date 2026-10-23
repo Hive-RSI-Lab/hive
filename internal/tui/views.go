@@ -697,6 +697,7 @@ func (m *model) settings() []setting {
 		{group: "General", label: "release repo", value: c.ReleaseRepo, key: "release_repo"},
 		{group: "Agents", label: "harness", value: c.Harness, key: "harness"},
 		{group: "Agents", label: "model", value: c.Model, key: "model"},
+		{group: "Agents", label: "lead model", value: c.LeadModel, key: "lead_model"},
 		{group: "Agents", label: "reviewer model", value: c.ReviewerModel, key: "reviewer_model"},
 		{group: "Agents", label: "review rounds", value: strconv.Itoa(c.ReviewRounds), key: "review_rounds"},
 	}
@@ -786,6 +787,8 @@ func (m *model) saveSetting(v string) tea.Cmd {
 		c.Harness = v
 	case key == "model":
 		c.Model = v
+	case key == "lead_model":
+		c.LeadModel = v
 	case key == "reviewer_model":
 		c.ReviewerModel = v
 	case key == "review_rounds":
