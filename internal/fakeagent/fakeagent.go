@@ -104,7 +104,7 @@ func Main(argv []string) int {
 		text = string(raw)
 	case "warden":
 		err = warden(all)
-	case "tribunal":
+	case "tribunal", "module-reviewer":
 		vote := "approve"
 		if strings.Contains(all, "FAKE:paneldecline") {
 			vote = "decline"
@@ -161,7 +161,7 @@ func emit(v any) {
 // handedBack is a stopped task the lead is told is its own, when its title asks the fake lead to fix it.
 var handedBack = regexp.MustCompile(`Stopped "[^"]*FAKE:leadfixes[^"]*" \(task (\S+?)[ )]`)
 
-var personRe = regexp.MustCompile(`(?s)Person: (.*?)(?:` + regexp.QuoteMeta(core.PendingSep) + `|\z)`)
+var personRe = regexp.MustCompile(`(?s)(?:Person|Module [^:]+): (.*?)(?:` + regexp.QuoteMeta(core.PendingSep) + `|\z)`)
 var projectRe = regexp.MustCompile(`create (?:an? )?(isolated )?project (?:called |named )?([A-Za-z0-9_-]+)`)
 
 // moduleRe is a person asking for a new module; merged is the notice that one merged.
