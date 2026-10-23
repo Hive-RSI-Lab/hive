@@ -868,7 +868,7 @@ func TestStepBack(t *testing.T) {
 		}
 	}
 	if !strings.Contains(fault.Title, "9 against 5") || !strings.Contains(fault.Detail, win.Exp) || !strings.Contains(fault.Detail, "FAKE:raisescore") || strings.Contains(fault.Detail, h.ws.Hive()) {
-		t.Fatalf("the fault must carry both scores, the setup and its transcript, and no host path: %+v", fault)
+		t.Fatalf("the fault must carry both scores, the setup and its run, and no host path: %+v", fault)
 	}
 	if lose.Status != "lost" || *lose.Score != 1 || lose.Fault != "" {
 		t.Fatalf("a losing setup files nothing: %+v", lose)

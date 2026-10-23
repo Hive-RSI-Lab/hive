@@ -182,7 +182,11 @@ If a setup is worth testing, write it to $HIVE_BOX/experiment.json as {"why": ".
 
 Write your reasoning to $HIVE_BOX/sweep.md, then finish.`, p.Name, why, p.Goals, better, *st.Score, s.Best, h, model, s.Budget, s.Best)
 	spec := m.Agents.Spec(id, "stepback", p.Name, dir, brief)
-	spec.Inputs, spec.Budget = map[string]string{"digest.md": m.Digest(0)}, s.Budget
+	only := ""
+	if p.Isolated {
+		only = p.Name
+	}
+	spec.Inputs, spec.Budget = map[string]string{"digest.md": m.Digest(0, only)}, s.Budget
 	if _, err := m.C.Runs.Start(spec); err != nil {
 		return m.fail(s, "could not start the step-back: "+err.Error())
 	}
@@ -268,6 +272,10 @@ func (m *Module) advance(s StepBack) {
 // experiment starts the setup in a fresh copy of the project at its start,
 // as a worker in a worker's sandbox, seeing no other project.
 func (m *Module) experiment(s StepBack, set Setup) {
+	if s.Budget <= 0 { // saved before step-backs had a budget
+		m.fail(s, "it has no budget to hold the experiment to")
+		return
+	}
 	p, ok := m.C.Projects.Get(s.Project)
 	if !ok {
 		m.fail(s, "the project is gone")
@@ -357,15 +365,18 @@ func (m *Module) transcript(r core.Run, n int) string {
 	return b.String()
 }
 
-// fileFault files the report, transcripts included, against the Hive's own
-// source when the Hive has it as a project, or asks the person when it doesn't.
+// fileFault files the scores, the setup and the run ids against the Hive's
+// own source, which becomes an issue on its forge. The transcripts go only to
+// the task's worker, as a file on the host. A fault on an isolated project, or
+// with no Hive source to file against, asks the person instead.
 func (m *Module) fileFault(s StepBack, p core.Project, exp core.Run, sc core.Score) string {
-	var hive []string
+	var ids []string
+	var shown []core.Run
 	var spent float64
 	for i, r := range m.hiveRuns(p.Name, s.Since) {
 		spent += r.Cost
 		if i < 8 {
-			hive = append(hive, fmt.Sprintf("### %s %s ($%.2f)\n\n%s", r.Role, r.ID, r.Cost, m.transcript(r, 1500)))
+			ids, shown = append(ids, r.ID), append(shown, r)
 		}
 	}
 	set, _ := json.MarshalIndent(s.Setup, "", "  ")
@@ -378,17 +389,17 @@ The setup:
 
 %s
 
-## What the setup did (run %s)
-
-%s
-## What the Hive's runs did, newest first
-
-%s
-`, p.Name, s.Why, core.Short(s.From), *s.Score, s.Best, sc.Direction, sc.Tolerance, exp.Cost, spent, set, exp.ID, m.transcript(exp, 6000), strings.Join(hive, "\n"))
+The setup ran as %s; the Hive's latest runs on the project were %s.
+`, p.Name, s.Why, core.Short(s.From), *s.Score, s.Best, sc.Direction, sc.Tolerance, exp.Cost, spent, set, exp.ID, strings.Join(ids, ", "))
 	for _, self := range m.C.Projects.List() {
-		if self.Self {
-			t, err := m.Work.File(work.Brief{Project: self.Name, Title: title, From: s.Run, Known: report,
-				Done: "the prompt or module that held the Hive's agents back is changed, from what the transcripts show the simpler setup did that they didn't"})
+		if self.Self && !p.Isolated {
+			transcripts := fmt.Sprintf("# What the setup did (run %s)\n\n%s\n# What the Hive's runs did, newest first\n\n", exp.ID, m.transcript(exp, 6000))
+			for _, r := range shown {
+				transcripts += fmt.Sprintf("## %s %s ($%.2f)\n\n%s\n", r.Role, r.ID, r.Cost, m.transcript(r, 1500))
+			}
+			t, err := m.Work.File(work.Brief{Project: self.Name, Title: title, From: s.Run, Known: report + "\nWhat each of those runs said and did is in $HIVE_RUN/transcripts.md.",
+				Inputs: map[string]string{"transcripts.md": transcripts},
+				Done:   "the prompt or module that held the Hive's agents back is changed, from what the transcripts show the simpler setup did that they didn't"})
 			if err == nil {
 				return t.ID
 			}
