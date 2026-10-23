@@ -920,10 +920,6 @@ func (m *model) saveSetting(v string) tea.Cmd {
 
 func (m *model) viewSettings() []string {
 	var lines []string
-	if m.st.ConfigErr != "" { // first, so a long list never hides it
-		lines = append(lines, stBad.Render(clip("config.json: "+m.st.ConfigErr, m.w)), "")
-	}
-	top := len(lines)
 	for i, s := range m.settings() {
 		line := fmt.Sprintf("%-26s %s", s.label, s.value)
 		if i == m.setSel {
@@ -944,7 +940,11 @@ func (m *model) viewSettings() []string {
 		lines = append(lines, "", m.input.View())
 	}
 	lines = append(lines, "", stDim.Render(fmt.Sprintf("Hive %s · %s · settings in %s", m.st.Version, m.st.Workspace, ".hive/config.json")))
-	return window(lines, top+m.setSel, m.bodyHeight())
+	if m.st.ConfigErr == "" {
+		return window(lines, m.setSel, m.bodyHeight())
+	}
+	// pinned above the rows so a short window never scrolls it away
+	return append([]string{stBad.Render(clip("config.json: "+m.st.ConfigErr, m.w))}, window(lines, m.setSel, m.bodyHeight()-1)...)
 }
 
 func fmtNum(f float64) string { return strconv.FormatFloat(f, 'g', 6, 64) }
