@@ -379,13 +379,18 @@ func (m *Module) startWorker(t *Task, p core.Project) error {
 }
 
 // renderBrief is the worker's first prompt. It quotes the project's lessons so
-// an idea that was reverted isn't tried again blind.
+// an idea that was reverted isn't tried again blind. On a scored project done is
+// the score itself, so no bar the filer set can cap the work.
 func (m *Module) renderBrief(t *Task, p core.Project, base string) string {
 	cfg := m.C.Effects.Config(p, base)
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Brief: %s\n\nTask %s · project %s · issue #%d\n\n", t.Label(), t.ID, p.Name, t.Issue.Number)
 	fmt.Fprintf(&b, "## The ask\n\n%s\n\n", t.Title)
-	fmt.Fprintf(&b, "## What done looks like\n\n%s\n\n## What's already known\n\n%s\n\n", orNone(t.Done), orNone(t.Known))
+	done := orNone(t.Done)
+	if cfg.Score != nil {
+		done = "The score, as far as you can take it."
+	}
+	fmt.Fprintf(&b, "## What done looks like\n\n%s\n\n## What's already known\n\n%s\n\n", done, orNone(t.Known))
 	b.WriteString("## The project\n\n")
 	b.WriteString("- Goals: `.hive/goals.md`. Read it; report against it.\n")
 	fmt.Fprintf(&b, "- Tests: `%s`\n", orNone(cfg.Test))
