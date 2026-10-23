@@ -395,7 +395,7 @@ func (m *model) threadLines(w int) (lines []string, spans [][2]int) {
 			if len(t.msgs) > 1 {
 				more = stDim.Render(fmt.Sprintf("  (+%d)", len(t.msgs)-1))
 			}
-			line := head + oneLine(first.Text) + more
+			line := head + preview(first.Text) + more
 			if i == m.threadSel && m.chatFocus == 1 {
 				line = stSel.Render(clip(line, w))
 			}
@@ -413,7 +413,7 @@ func (m *model) threadLines(w int) (lines []string, spans [][2]int) {
 				h = stSel.Render(clip(h, w))
 			}
 			lines = append(lines, h)
-			lines = append(lines, indent(wrap(msg.Text, w-len(prefix)-2), prefix+"  ")...)
+			lines = append(lines, indent(markdown(msg.Text, w-len(prefix)-2), prefix+"  ")...)
 		}
 		lines = append(lines, "")
 		spans = append(spans, [2]int{start, len(lines)})
