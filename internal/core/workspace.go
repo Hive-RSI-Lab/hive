@@ -79,6 +79,9 @@ type Config struct {
 	// PlateauMerges: a project whose best score hasn't moved in this many
 	// merges gets a step-back (besides the improve.stepback schedule); 0 is off.
 	PlateauMerges int `json:"plateau_merges"`
+	// StallFloorSeconds: nothing counts as stalled before this long without moving,
+	// however fast its stage usually is here; 0 is the default (20 minutes).
+	StallFloorSeconds int `json:"stall_floor_seconds,omitempty"`
 }
 
 // ProjectSettings override workspace defaults per project.

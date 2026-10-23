@@ -160,9 +160,12 @@ func NewRuns(ws Workspace, j *Journal, sb func() (sandbox.Sandbox, error), token
 	rs.ops = NewOps(rs)
 	_ = j.Replay(rs.apply)
 	// A crash between writing a turn's token and starting the turn left it behind.
+	stuck := map[string]error{}
 	for _, r := range rs.runs {
 		if HarnessName(r.Harness) == "codex" && r.Status != StatusRunning {
-			rs.dropCodexHome(r.ID)
+			if err := rs.dropCodexHome(r.ID); err != nil {
+				stuck[r.ID] = err
+			}
 		}
 	}
 	j.Subscribe(func(e Event) {
@@ -170,6 +173,18 @@ func NewRuns(ws Workspace, j *Journal, sb func() (sandbox.Sandbox, error), token
 		rs.apply(e)
 		rs.mu.Unlock()
 	})
+	for id, err := range stuck {
+		why := "its Codex token could not be deleted: " + err.Error()
+		r, _ := rs.Get(id)
+		switch {
+		case r.Status == StatusBlocked && strings.HasPrefix(r.Reason, "its Codex token could not be deleted"):
+			// already said; a restart adds nothing
+		case r.Terminal():
+			rs.Progress(id, why) // a finished run keeps its status
+		default:
+			rs.SetStatus(id, StatusBlocked, why)
+		}
+	}
 	return rs
 }
 
@@ -533,6 +548,13 @@ func (rs *Runs) Stop(id, reason string) {
 		return // the turn's end records the stop
 	}
 	rs.append("run.status", runNote{ID: id, Status: StatusStopped, Reason: reason})
+}
+
+// Interrupt ends a running turn's process. The turn ends like any interrupted
+// one and is retried on the same checkout, so nothing is started twice.
+func (rs *Runs) Interrupt(id string) bool {
+	r, ok := rs.Get(id)
+	return ok && r.Status == StatusRunning && proc.Alive(r.Proc) && proc.Kill(r.Proc) == nil
 }
 
 // Tick advances every run one step: mailboxes, finished turns, due turns.
