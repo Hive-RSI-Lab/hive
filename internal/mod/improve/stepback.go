@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,7 +40,8 @@ type StepBack struct {
 	Asked   int       `json:"asked,omitempty"`
 	From    string    `json:"from"` // the project's start
 	Best    float64   `json:"best"` // the Hive's best kept score when it began
-	Budget  float64   `json:"budget,omitempty"`
+	Since   time.Time `json:"since,omitempty"`
+	Budget  float64   `json:"budget,omitempty"` // what the Hive spent on the project since the last step-back
 	Score   *float64  `json:"score,omitempty"`
 	Status  string    `json:"status"` // thinking | experimenting | scoring | won | lost | none | failed
 	Note    string    `json:"note,omitempty"`
@@ -77,16 +79,15 @@ func (m *Module) start(project string) (Measurement, bool) {
 	return Measurement{}, false
 }
 
-// RotateStepBacks starts a step-back on each scored project with new
-// measures since its last one (the improve.stepback schedule).
+// RotateStepBacks starts a step-back on each project where the Hive merged
+// something since its last one (the improve.stepback schedule).
 func (m *Module) RotateStepBacks() string {
 	var started []string
 	for _, p := range m.C.Projects.List() {
-		ms, last := m.Scores(p.Name), m.lastStepBack(p.Name)
-		if len(ms) > 0 && ms[len(ms)-1].At.After(last) {
-			if err := m.StartStepBack(p, "it is the regular step-back"); err == nil {
-				started = append(started, p.Name)
-			}
+		last := m.lastStepBack(p.Name)
+		merged := slices.ContainsFunc(m.Scores(p.Name), func(x Measurement) bool { return x.Task != "" && x.At.After(last) })
+		if merged && m.StartStepBack(p, "it is the regular step-back") == nil {
+			started = append(started, p.Name)
 		}
 	}
 	return "stepped back on: " + strings.Join(started, ", ")
@@ -100,6 +101,13 @@ func (m *Module) lastStepBack(project string) time.Time {
 		}
 	}
 	return t
+}
+
+// hiveRuns are the Hive's own runs on a project made after t, newest first.
+func (m *Module) hiveRuns(project string, t time.Time) []core.Run {
+	return m.C.Runs.List(func(r *core.Run) bool {
+		return r.Project == project && !strings.HasPrefix(r.ID, "stepback-") && r.Created.After(t)
+	})
 }
 
 // plateau counts the merges measured since the best kept score last moved
@@ -121,24 +129,42 @@ func (m *Module) plateau(project string) int {
 	return n
 }
 
-// StartStepBack starts the agent that steps back on p.
+// StartStepBack starts the agent that steps back on p, in a copy of p at
+// main. Every way it can't start is recorded and said in p's step-back alert.
 func (m *Module) StartStepBack(p core.Project, why string) error {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
 	for _, s := range m.StepBacks(p.Name) {
 		if s.active() {
 			return fmt.Errorf("a step-back on %s is already running", p.Name)
 		}
 	}
+	id := "stepback-" + core.NewID()
+	s := StepBack{ID: id, Project: p.Name, Why: why, Run: id, Since: m.lastStepBack(p.Name), Status: "thinking", Started: time.Now().UTC()}
+	s.Best, _ = m.Best(p.Name)
+	for _, r := range m.hiveRuns(p.Name, s.Since) {
+		s.Budget += r.Cost
+	}
 	st, ok := m.start(p.Name)
-	best, _ := m.Best(p.Name)
 	if !ok {
-		return fmt.Errorf("%s has no score to beat", p.Name)
+		return m.fail(s, "it has no score to beat")
+	}
+	s.From = st.SHA
+	if s.Budget <= 0 {
+		s.Status, s.Note, s.Ended = "none", "the Hive has spent nothing on it since the last step-back, so a setup has nothing to spend", time.Now().UTC()
+		m.saveStepBack(s)
+		m.alert(p.Name, "the step-back on "+p.Name+" did not run: "+s.Note)
+		return nil
+	}
+	main, err := m.C.Effects.Sync(p)
+	if err != nil {
+		return m.fail(s, "could not fetch the project: "+err.Error())
+	}
+	dir, err := m.C.Effects.NewCheckout(p, id, main)
+	if err != nil {
+		return m.fail(s, "could not make a copy of the project: "+err.Error())
 	}
 	cfg := m.C.Effects.Config(p, st.SHA)
-	id := "stepback-" + core.NewID()
-	dir, err := m.Agents.Scratch(id)
-	if err != nil {
-		return err
-	}
 	h, model := m.Agents.Model("worker", p.Name)
 	better := "higher"
 	if cfg.Score != nil && cfg.Score.Direction == "lower" {
@@ -148,19 +174,19 @@ func (m *Module) StartStepBack(p core.Project, why string) error {
 
 The person's goal, in their words: %s
 
-Its score (%s is better) started at %g, and the best the Hive has kept is %g. The records are in $HIVE_RUN/digest.md, the project is in $HIVE_PROJECTS/%s, and the Hive's own prompts and modules are in $HIVE_MODULES.
+Its score (%s is better) started at %g, and the best the Hive has kept is %g. The records are in $HIVE_RUN/digest.md, the project at main is your working directory, and the Hive's own prompts and modules are in $HIVE_MODULES.
 
 Ask two questions: is the whole approach right, and what is the simplest setup that might beat it?
 
-If a setup is worth testing, write it to $HIVE_BOX/experiment.json as {"why": "...", "system": "...", "asks": ["..."], "model": "..."}. The Hive runs it once in a fresh copy of the project at its start, in a worker's sandbox: one %s session, "system" appended to the harness's own system prompt (empty for none), the "asks" sent in turn in that session, on "model" (empty for %s). Nothing else is added. It may spend what the Hive has spent on this project so far. The copy is then scored with the project's score command, and if it beats %g the Hive files a fault against its own setup with both scores.
+If a setup is worth testing, write it to $HIVE_BOX/experiment.json as {"why": "...", "system": "...", "asks": ["..."], "model": "..."}. The Hive runs it once in a fresh copy of the project at its start, in a worker's sandbox: one %s session, "system" appended to the harness's own system prompt (empty for none), the "asks" sent in turn in that session, on "model" (empty for %s). Nothing else is added, and it can only report on its own copy. It may spend $%.2f, what the Hive has spent on this project since the last step-back. The copy is then scored with the project's score command, and if it beats %g the Hive files a fault against its own setup with both scores.
 
-Write your reasoning to $HIVE_BOX/sweep.md, then finish.`, p.Name, why, p.Goals, better, *st.Score, best, p.Name, h, model, best)
-	spec := m.Agents.Spec(id, "stepback", "", dir, brief)
-	spec.Inputs = map[string]string{"digest.md": m.Digest(0)}
+Write your reasoning to $HIVE_BOX/sweep.md, then finish.`, p.Name, why, p.Goals, better, *st.Score, s.Best, h, model, s.Budget, s.Best)
+	spec := m.Agents.Spec(id, "stepback", p.Name, dir, brief)
+	spec.Inputs, spec.Budget = map[string]string{"digest.md": m.Digest(0)}, s.Budget
 	if _, err := m.C.Runs.Start(spec); err != nil {
-		return err
+		return m.fail(s, "could not start the step-back: "+err.Error())
 	}
-	m.saveStepBack(StepBack{ID: id, Project: p.Name, Why: why, Run: id, From: st.SHA, Best: best, Status: "thinking", Started: time.Now().UTC()})
+	m.saveStepBack(s)
 	return nil
 }
 
@@ -200,6 +226,9 @@ func (m *Module) advance(s StepBack) {
 		run = s.Exp
 	}
 	r, ok := m.C.Runs.Get(run)
+	if ok && r.Status == core.StatusParked {
+		m.alert(s.Project, fmt.Sprintf("the step-back on %s is waiting, and no other starts there until it ends (stop run %s to end it): %s", s.Project, r.ID, r.Reason))
+	}
 	if !ok || (!r.Terminal() && s.Status != "scoring") {
 		return
 	}
@@ -222,7 +251,7 @@ func (m *Module) advance(s StepBack) {
 		}
 		m.experiment(s, set)
 	case "experimenting":
-		if s.Asked < len(s.Setup.Asks) && (s.Budget == 0 || r.Cost < s.Budget) {
+		if s.Asked < len(s.Setup.Asks) && r.Cost < s.Budget {
 			s.Asked++
 			m.saveStepBack(s)
 			m.C.Runs.Reopen(r.ID, s.Setup.Asks[s.Asked-1])
@@ -254,9 +283,6 @@ func (m *Module) experiment(s StepBack, set Setup) {
 	if set.Model != "" {
 		model = set.Model
 	}
-	for _, r := range m.C.Runs.List(func(r *core.Run) bool { return r.Project == p.Name && r.Name != "experiment" }) {
-		s.Budget += r.Cost
-	}
 	if _, ok := m.C.Runs.Get(id); !ok {
 		spec := core.RunSpec{ID: id, Role: "worker", Name: "experiment", Project: p.Name, Checkout: dir, Harness: h, Model: model,
 			System: set.System, Brief: set.Asks[0], Isolated: true, OneTurn: true, Budget: s.Budget}
@@ -279,6 +305,7 @@ func (m *Module) score(s StepBack, r core.Run) {
 	}
 	main, err := m.C.Effects.Sync(p)
 	if err != nil {
+		m.alert(s.Project, "the step-back on "+s.Project+" is waiting to score: could not fetch the project: "+err.Error())
 		return // tried again next tick
 	}
 	cfg := m.C.Effects.Config(p, main)
@@ -294,8 +321,12 @@ func (m *Module) score(s StepBack, r core.Run) {
 		m.fail(s, "could not take out what the experiment left: "+err.Error())
 		return
 	}
-	if ch, err := m.C.Effects.Classify(p, s.From, sha); err == nil && len(ch.Protected) > 0 {
-		m.fail(s, "the experiment changed what scores it ("+strings.Join(ch.Protected, ", ")+"), so its score can't count")
+	ch, err := m.C.Effects.Classify(p, s.From, sha)
+	if len(ch.Protected) > 0 {
+		err = errors.New("it changed what scores it (" + strings.Join(ch.Protected, ", ") + ")")
+	}
+	if err != nil {
+		m.fail(s, "the experiment's score can't count: "+err.Error())
 		return
 	}
 	c := m.C.Effects.RunCheck(p, sha, "score", cfg.Score.Command)
@@ -312,53 +343,75 @@ func (m *Module) score(s StepBack, r core.Run) {
 	m.saveStepBack(s)
 }
 
-// fileFault writes the report and files it against the Hive's own source when
-// the Hive has it as a project, or asks the person when it doesn't.
+// transcript is what a run said and did, each step clipped, to about n runes.
+func (m *Module) transcript(r core.Run, n int) string {
+	var b strings.Builder
+	for turn := 1; turn <= r.Turn; turn++ {
+		for _, ev := range m.C.Runs.ReadTurn(r, turn).Steps {
+			if b.Len() > n {
+				return b.String() + "> …\n"
+			}
+			b.WriteString("> " + core.Clip(ev.Tool+" "+ev.Text, 300) + "\n")
+		}
+	}
+	return b.String()
+}
+
+// fileFault files the report, transcripts included, against the Hive's own
+// source when the Hive has it as a project, or asks the person when it doesn't.
 func (m *Module) fileFault(s StepBack, p core.Project, exp core.Run, sc core.Score) string {
 	var hive []string
 	var spent float64
-	for _, r := range m.C.Runs.List(func(r *core.Run) bool { return r.Project == p.Name && r.Name != "experiment" }) {
-		hive = append(hive, fmt.Sprintf("- %s %s ($%.2f): %s", r.Role, r.ID, r.Cost, filepath.Join(m.C.WS.RunHost(r.ID), "turn-*.jsonl")))
+	for i, r := range m.hiveRuns(p.Name, s.Since) {
 		spent += r.Cost
+		if i < 8 {
+			hive = append(hive, fmt.Sprintf("### %s %s ($%.2f)\n\n%s", r.Role, r.ID, r.Cost, m.transcript(r, 1500)))
+		}
 	}
 	set, _ := json.MarshalIndent(s.Setup, "", "  ")
 	title := fmt.Sprintf("The Hive's own setup lost to a simpler one on %s: %g against %g", p.Name, *s.Score, s.Best)
-	report := fmt.Sprintf(`# %s
+	report := fmt.Sprintf(`A step-back on %s (%s) asked whether the Hive's approach is right and what the simplest setup is that might beat it, and ran its answer.
 
-A step-back on %s (%s) asked whether the Hive's approach is right and what the simplest setup is that might beat it, and ran its answer.
-
-From the project's start at %s, the setup scored %g. The best the Hive has kept is %g (%s is better, tolerance %g). The setup cost $%.2f; the Hive's runs on the project cost $%.2f.
+From the project's start at %s, the setup scored %g. The best the Hive has kept is %g (%s is better, tolerance %g). The setup cost $%.2f; the Hive's runs on the project since the last step-back cost $%.2f.
 
 The setup:
 
 %s
 
-The setup's transcript: %s
+## What the setup did (run %s)
 
-The Hive's transcripts:
 %s
-`, title, p.Name, s.Why, core.Short(s.From), *s.Score, s.Best, sc.Direction, sc.Tolerance, exp.Cost, spent, set,
-		filepath.Join(m.C.WS.RunHost(exp.ID), "turn-*.jsonl"), strings.Join(hive, "\n"))
-	path := filepath.Join(m.C.WS.Hive(), "improve", "stepbacks", s.ID+".md")
-	os.MkdirAll(filepath.Dir(path), 0o755)
-	os.WriteFile(path, []byte(report), 0o644)
+## What the Hive's runs did, newest first
+
+%s
+`, p.Name, s.Why, core.Short(s.From), *s.Score, s.Best, sc.Direction, sc.Tolerance, exp.Cost, spent, set, exp.ID, m.transcript(exp, 6000), strings.Join(hive, "\n"))
 	for _, self := range m.C.Projects.List() {
 		if self.Self {
-			t, err := m.Work.File(work.Brief{Project: self.Name, Title: title, From: s.Run, Known: report + "\nThe full report: " + path,
+			t, err := m.Work.File(work.Brief{Project: self.Name, Title: title, From: s.Run, Known: report,
 				Done: "the prompt or module that held the Hive's agents back is changed, from what the transcripts show the simpler setup did that they didn't"})
 			if err == nil {
 				return t.ID
 			}
 		}
 	}
-	return m.C.Person.Ask(core.Ask{Kind: "question", Ref: "stepback:" + s.ID, Project: p.Name, Title: title,
-		Detail: report + "\nThe full report: " + path, Options: []string{"ok"}}).ID
+	return m.C.Person.Ask(core.Ask{Kind: "question", Ref: "stepback:" + s.ID, Project: p.Name, Title: title, Detail: report, Options: []string{"ok"}}).ID
 }
 
-// fail ends a step-back and says why in one alert per project that updates.
-func (m *Module) fail(s StepBack, why string) {
+// alert says how a project's step-back stands, as one alert that updates.
+func (m *Module) alert(project, text string) {
+	m.mu.Lock()
+	same := m.alerted[project] == text
+	m.alerted[project] = text
+	m.mu.Unlock()
+	if !same {
+		m.C.J.MustAppend("alert.raised", map[string]string{"kind": "stepback", "ref": "stepback:" + project, "project": project, "text": text})
+	}
+}
+
+// fail ends a step-back and says why in its project's step-back alert.
+func (m *Module) fail(s StepBack, why string) error {
 	s.Status, s.Note, s.Ended = "failed", why, time.Now().UTC()
 	m.saveStepBack(s)
-	m.C.J.MustAppend("alert.raised", map[string]string{"kind": "stepback", "ref": "stepback:" + s.Project, "project": s.Project,
-		"text": "the step-back on " + s.Project + " could not finish: " + why})
+	m.alert(s.Project, "the step-back on "+s.Project+" could not finish: "+why)
+	return errors.New(why)
 }

@@ -61,11 +61,13 @@ type Module struct {
 
 	stepbacks map[string]*StepBack
 	busy      map[string]bool
+	alerted   map[string]string // project -> the step-back alert last raised
+	startMu   sync.Mutex        // one step-back starts at a time
 }
 
 // New loads measurements and sweeps.
 func New(c *core.Core, a *agents.Agents, w *work.Module, ch *chat.Module) *Module {
-	m := &Module{C: c, Agents: a, Work: w, Chat: ch, scores: map[string][]Measurement{}, sweeps: map[string]*Sweep{}, queue: make(chan work.Task, 64), retryAt: map[string]time.Time{}, stepbacks: map[string]*StepBack{}, busy: map[string]bool{}}
+	m := &Module{C: c, Agents: a, Work: w, Chat: ch, scores: map[string][]Measurement{}, sweeps: map[string]*Sweep{}, queue: make(chan work.Task, 64), retryAt: map[string]time.Time{}, stepbacks: map[string]*StepBack{}, busy: map[string]bool{}, alerted: map[string]string{}}
 	apply := func(e core.Event) {
 		m.mu.Lock()
 		defer m.mu.Unlock()

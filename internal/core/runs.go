@@ -48,7 +48,7 @@ type RunSpec struct {
 	Modules    []string          `json:"modules,omitempty"`    // modules an isolated run may see; others see all
 	Tools      []string          `json:"tools,omitempty"`      // explicit harness tool list
 	Inputs     map[string]string `json:"inputs,omitempty"`     // name -> content, placed read-only in /hive/run
-	OneTurn    bool              `json:"one_turn,omitempty"`   // done when a turn ends; nothing is added to its prompts
+	OneTurn    bool              `json:"one_turn,omitempty"`   // done when a turn ends; nothing is added to its prompts, and it may only finish and report progress
 	Budget     float64           `json:"budget,omitempty"`     // USD the whole run may spend; 0 is no cap
 }
 
@@ -296,7 +296,11 @@ func (rs *Runs) Start(s RunSpec) (Run, error) {
 	if s.Harness == "" {
 		s.Harness = "claude"
 	}
-	if _, err := harness.Get(s.Harness); err != nil {
+	h, err := harness.Get(s.Harness)
+	if err != nil {
+		return Run{}, err
+	}
+	if err := harness.Capped(h, s.Budget); err != nil {
 		return Run{}, err
 	}
 	for _, d := range []string{rs.ws.RunHost(s.ID), rs.ws.RunRO(s.ID), filepath.Join(rs.ws.RunBox(s.ID), "outbox"), filepath.Join(rs.ws.RunBox(s.ID), "inbox"), rs.ws.RunHome(s.ID)} {

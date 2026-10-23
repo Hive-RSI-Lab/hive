@@ -85,6 +85,15 @@ func APIHosts(h Harness) []string {
 	return nil
 }
 
+// Capped is nil when h holds a turn to budget USD itself (Turn.MaxBudgetUSD).
+// A harness says it does with a CapsSpend method; 0 is no budget.
+func Capped(h Harness, budget float64) error {
+	if _, ok := h.(interface{ CapsSpend() }); budget > 0 && !ok {
+		return fmt.Errorf("the %s harness can't hold a run to a budget, so a run with one won't start on it", h.Name())
+	}
+	return nil
+}
+
 // Get returns a harness by name.
 func Get(name string) (Harness, error) {
 	switch name {
@@ -102,6 +111,7 @@ func Get(name string) (Harness, error) {
 type Claude struct{}
 
 func (Claude) Name() string           { return "claude" }
+func (Claude) CapsSpend()             {}
 func (Claude) Program() string        { return "claude" }
 func (Claude) LoginCommand() []string { return []string{"claude", "auth", "login"} }
 func (Claude) APIHosts() []string     { return []string{"api.anthropic.com"} }
