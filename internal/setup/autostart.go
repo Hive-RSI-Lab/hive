@@ -32,7 +32,9 @@ func launchAgent() string {
 // EnableAutostartAt starts the binary at exe for the Hive in root. It runs
 // during a handover too, so on macOS it only rewrites the plist: unloading
 // the job then could stop the daemon doing the handover, and the next login
-// reads the new plist.
+// reads the new plist. When the job's daemon exits, launchd kills its process
+// group; the handover child has its own session (proc.StartDetached), and
+// AbandonProcessGroup keeps launchd off it all the same.
 func EnableAutostartAt(exe, root string) error {
 	switch runtime.GOOS {
 	case "windows":
@@ -46,6 +48,7 @@ func EnableAutostartAt(exe, root string) error {
   <key>ProgramArguments</key><array><string>%s</string><string>daemon</string></array>
   <key>EnvironmentVariables</key><dict><key>HIVE_HOME</key><string>%s</string></dict>
   <key>RunAtLoad</key><true/>
+  <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>%s</string>
   <key>StandardErrorPath</key><string>%s</string>
 </dict></plist>

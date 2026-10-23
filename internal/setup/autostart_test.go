@@ -58,7 +58,7 @@ func TestHandoverLeavesLaunchdAlone(t *testing.T) {
 	if err := EnableAutostartAt("/new/hive", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
-	if raw, err := os.ReadFile(launchAgent()); err != nil || !strings.Contains(string(raw), "<string>/new/hive</string>") {
+	if raw, err := os.ReadFile(launchAgent()); err != nil || !strings.Contains(string(raw), "<string>/new/hive</string>") || !strings.Contains(string(raw), "<key>AbandonProcessGroup</key><true/>") {
 		t.Fatalf("plist %q, %v", raw, err)
 	}
 	if raw, err := os.ReadFile(called); err == nil {
