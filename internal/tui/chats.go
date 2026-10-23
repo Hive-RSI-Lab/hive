@@ -135,6 +135,12 @@ func threads(msgs []chat.Message) []thread {
 func (m *model) keyChats(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	rows := m.chatRows()
 	s := k.String()
+	if k.Paste && m.chatSel < len(rows) && !rows[m.chatSel].group {
+		// A drop before composing starts a message and attaches like one in it.
+		focus := m.compose("", "")
+		_, cmd := m.keyInput(k)
+		return m, tea.Batch(focus, cmd)
+	}
 	switch s {
 	case "pgup":
 		m.scrollBy(-(m.paneH() - 1))
@@ -231,6 +237,7 @@ func (m *model) keyChats(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) compose(thread, initial string) tea.Cmd {
 	m.composing, m.reply = true, thread
+	m.composeN++
 	m.input.SetValue(initial)
 	m.input.CursorEnd()
 	if thread != "" {
@@ -310,7 +317,11 @@ func (m *model) viewChats() []string {
 			target = "reply"
 		}
 		c, _ := m.currentChat()
-		out = append(out, stDim.Render(fmt.Sprintf("  to %s · %s", c.Title, target)), m.input.View())
+		chips := ""
+		for _, f := range m.files {
+			chips += stDim.Render(" · ") + stAccent.Render("📎 "+f.Name)
+		}
+		out = append(out, stDim.Render(fmt.Sprintf("  to %s · %s", c.Title, target))+chips, m.input.View())
 	}
 	return out
 }
