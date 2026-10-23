@@ -8,7 +8,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/api"
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
@@ -393,5 +395,29 @@ func TestSettingsShowsTheConfigLoadError(t *testing.T) {
 	m.st.ConfigErr = "tribunal seat {\"model\": 5} isn't a model name"
 	if view := m.View(); !strings.Contains(view, "isn't a model name") {
 		t.Fatalf("no load error on Settings:\n%s", view)
+	}
+}
+
+// The cursor on a group row reverses the whole row, not just the dim arrow,
+// and collapsing the open chat's group keeps its name in the header.
+func TestSidebarGroupRow(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	m := testModel(120, 40)
+	m.pick(sideRow{sec: -1, chatID: "project:textkit"})
+	want := m.path()
+	for i, r := range m.sideRows() {
+		if r.group && r.label == "textkit" {
+			m.side = i
+		}
+	}
+	m.focus = 0
+	line := m.viewSidebar(30).body[m.side]
+	if inner := strings.TrimSuffix(strings.TrimPrefix(line, "\x1b[7m"), "\x1b[0m"); strings.Contains(inner, "\x1b") || ansi.Strip(line) != fit(" ▾ textkit", 30) {
+		t.Fatalf("selected group row is not one reversed run: %q", line)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !m.closed["p:textkit"] || m.path() != want {
+		t.Fatalf("collapsed %v: path %q, want %q", m.closed, m.path(), want)
 	}
 }

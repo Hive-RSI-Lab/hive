@@ -23,8 +23,11 @@ type sideRow struct {
 }
 
 // sideRows lists the sections, then one chat per project lead and per agent,
-// grouped by project, then the Hive's own lead and agents.
-func (m *model) sideRows() []sideRow {
+// grouped by project, then the Hive's own lead and agents. A collapsed group
+// hides its chats unless all is set, which lookups use.
+func (m *model) sideRows() []sideRow { return m.rows(false) }
+
+func (m *model) rows(all bool) []sideRow {
 	var rows []sideRow
 	for i, s := range sections {
 		rows = append(rows, sideRow{sec: i, key: "sec:" + s, label: s})
@@ -41,7 +44,7 @@ func (m *model) sideRows() []sideRow {
 		rows = append(rows, sideRow{sec: -1, key: key, label: label, group: true})
 		for _, c := range chats {
 			seen[c.chatID] = true
-			if !m.closed[key] {
+			if all || !m.closed[key] {
 				c.sec = -1
 				rows = append(rows, c)
 			}
@@ -123,7 +126,7 @@ func (m *model) viewSidebar(w int) pane {
 			line = pad(clip(line, w-4), w-2-visibleWidth(count)) + count
 		}
 		if i == m.side && m.focus == 0 {
-			line = stSel.Render(fit(" "+mark+r.label, w))
+			line = stSel.Render(fit(" "+ansi.Strip(mark)+r.label, w))
 		}
 		body = append(body, line)
 	}
@@ -202,7 +205,7 @@ func (m *model) currentChat() (api.ChatView, bool) {
 			return c, true
 		}
 	}
-	for _, r := range m.sideRows() {
+	for _, r := range m.rows(true) {
 		if r.chatID == id && id != "" {
 			return api.ChatView{Chat: chat.Chat{ID: id, Title: r.label, Kind: "agent"}}, true
 		}
@@ -212,7 +215,7 @@ func (m *model) currentChat() (api.ChatView, bool) {
 
 // where names the open chat as the sidebar groups it: "textkit", "lead".
 func (m *model) where() (group, name string) {
-	for _, r := range m.sideRows() {
+	for _, r := range m.rows(true) {
 		if r.group {
 			group = r.label
 		}
