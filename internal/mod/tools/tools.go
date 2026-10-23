@@ -43,7 +43,7 @@ func (m *Module) opInstall(r core.Run, a json.RawMessage) (any, error) {
 			Title: "An agent needs a system install (root): " + core.Clip(cmd, 100), Detail: cmd + "\n\n" + req.Why})
 		return "sent to the person with the exact command; their answer comes back to you as a message", nil
 	}
-	v, err := m.Install(req.Tool, req.Version)
+	v, err := m.Install(req.Tool, req.Version, m.C.WS.LoadConfig().Egress.For(r.Role))
 	if err != nil {
 		return nil, err
 	}
@@ -56,8 +56,9 @@ func (m *Module) onAnswer(a core.Ask) {
 	m.C.Runs.Send(a.From, fmt.Sprintf("[install] the person answered %q to: %s %s", a.Answer, a.Detail, a.Note))
 }
 
-// Install runs `hive tools-fetch` in a sandbox that may write the tools folder.
-func (m *Module) Install(tool, version string) (string, error) {
+// Install runs `hive tools-fetch` in a sandbox that may write the tools folder,
+// its downloads held to allow (the asking run's egress list; nil is every public host).
+func (m *Module) Install(tool, version string, allow []string) (string, error) {
 	if err := checkInput(tool, version); err != nil {
 		return "", err
 	}
@@ -75,7 +76,7 @@ func (m *Module) Install(tool, version string) (string, error) {
 	logs := filepath.Join(m.C.WS.Hive(), "checks")
 	os.MkdirAll(logs, 0o755)
 	log := filepath.Join(logs, "tools-"+core.NewID()+".log")
-	code, err := sb.Run(installSpec(sb, m.C.WS.Tools(), home, m.C.Tools(), log, tool, version), 20*time.Minute)
+	code, err := sb.Run(installSpec(sb, m.C.WS.Tools(), home, m.C.Tools(), log, tool, version, allow), 20*time.Minute)
 	var out string
 	for _, p := range []string{log, log + ".err", log + ".wsl"} {
 		raw, _ := os.ReadFile(p)
@@ -95,7 +96,7 @@ func (m *Module) Install(tool, version string) (string, error) {
 // installSpec runs `hive tools-fetch` with folder writable and a fresh home.
 // Where paths are the host's (Seatbelt, bare) HOME is the host temp dir; the
 // sandbox adds the egress proxy for a networked spec.
-func installSpec(sb sandbox.Sandbox, folder, home string, bins []string, log, tool, version string) sandbox.Spec {
+func installSpec(sb sandbox.Sandbox, folder, home string, bins []string, log, tool, version string, allow []string) sandbox.Spec {
 	mounts := []sandbox.Mount{{Host: folder, Inside: sandbox.ToolsInside, RW: true}, {Host: home, Inside: "/hive/home", RW: true}}
 	env := []string{"HOME=" + home}
 	argv := []string{bins[0], "tools-fetch", folder, tool, version}
@@ -108,7 +109,7 @@ func installSpec(sb sandbox.Sandbox, folder, home string, bins []string, log, to
 		}
 	}
 	return sandbox.Spec{ID: "tools-" + tool, Argv: argv, Env: env, Cwd: sandbox.InsidePath(sb, mounts[1]), Mounts: mounts, Tools: bins,
-		Stdout: log, Network: true, UID: os.Getuid(), GID: os.Getgid()}
+		Stdout: log, Network: true, Allow: allow, UID: os.Getuid(), GID: os.Getgid()}
 }
 
 // Installed lists "<tool> <version>" for what the folder holds.

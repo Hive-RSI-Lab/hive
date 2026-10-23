@@ -45,7 +45,7 @@ type Spec struct {
 	Stdout   string   `json:"stdout"`    // host path, appended
 	StopFile string   `json:"stop_file"` // host path; when present the command is killed
 	Network  bool     `json:"network"`   // outbound through the egress proxy
-	Allow    []string `json:"allow"`     // hosts the proxy lets through; empty is every public host
+	Allow    []string `json:"allow"`     // hosts the proxy lets through; nil is every public host
 	UID      int      `json:"uid"`
 	GID      int      `json:"gid"`
 }
@@ -145,15 +145,16 @@ func ToolBins(folder string, join func(...string) string) []string {
 }
 
 // pathDirs are what a command on the host's own paths (bare, Seatbelt) gets
-// on PATH: the exposed tools' dirs and the bin dirs of a mounted tools folder.
+// on PATH: the bin dirs of a mounted tools folder, then the exposed tools'
+// dirs, so an installed runtime wins over an older one beside hive on the host.
 func pathDirs(s Spec) []string {
-	dirs := toolDirs(s.Tools)
+	var dirs []string
 	for _, m := range s.Mounts {
 		if m.Inside == ToolsInside {
 			dirs = append(dirs, ToolBins(m.Host, filepath.Join)...)
 		}
 	}
-	return dirs
+	return append(dirs, toolDirs(s.Tools)...)
 }
 
 func withPathPrefix(env []string, dirs []string) []string {

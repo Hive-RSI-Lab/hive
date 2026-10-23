@@ -2,10 +2,12 @@ package tools
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -110,7 +112,7 @@ func TestFetchRefusesOddInput(t *testing.T) {
 	if _, err := Fetch(t.TempDir(), "rust", ""); err == nil {
 		t.Fatal("an unknown tool was accepted")
 	}
-	if _, err := (&Module{}).Install("rust", ""); err == nil || !strings.Contains(err.Error(), "no tool") {
+	if _, err := (&Module{}).Install("rust", "", nil); err == nil || !strings.Contains(err.Error(), "no tool") {
 		t.Fatalf("Install didn't refuse an unknown tool before starting a sandbox: %v", err)
 	}
 }
@@ -180,7 +182,7 @@ func TestUnpackSweepsStaleTemps(t *testing.T) {
 // so the installer's spec there needs a writable HOME and the proxy.
 func TestInstallerOnSeatbeltGetsProxyAndHome(t *testing.T) {
 	folder, home := t.TempDir(), t.TempDir()
-	sp := installSpec(sandbox.Bare{}, folder, home, []string{"/opt/hive"}, filepath.Join(home, "log"), "node", "")
+	sp := installSpec(sandbox.Bare{}, folder, home, []string{"/opt/hive"}, filepath.Join(home, "log"), "node", "", nil)
 	env := strings.Join(sandbox.SeatbeltEnv(sp, "4242"), "\n")
 	for _, want := range []string{"HTTPS_PROXY=http://127.0.0.1:4242", "https_proxy=http://127.0.0.1:4242", "HOME=" + home} {
 		if !strings.Contains(env, want+"\n") && !strings.HasSuffix(env, want) {
@@ -197,5 +199,32 @@ func TestInstallerOnSeatbeltGetsProxyAndHome(t *testing.T) {
 	sp.Network = false
 	if env := strings.Join(sandbox.SeatbeltEnv(sp, "4242"), "\n"); strings.Contains(env, "PROXY") {
 		t.Fatalf("a spec with no network got the proxy:\n%s", env)
+	}
+}
+
+// An install asked by a run whose egress list leaves out nodejs.org must not
+// reach it: the installer's proxy holds to the run's list.
+func TestInstallerHoldsToTheRunsEgressList(t *testing.T) {
+	home := t.TempDir()
+	sp := installSpec(sandbox.Bare{}, t.TempDir(), home, []string{"/opt/hive"}, filepath.Join(home, "log"), "node", "", []string{"api.anthropic.com"})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refused bytes.Buffer
+	e := sandbox.ServeEgress(ln, sp.Allow, &refused)
+	defer e.Close()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "CONNECT nodejs.org:443 HTTP/1.1\r\nHost: nodejs.org:443\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusForbidden || refused.String() != "nodejs.org\n" {
+		t.Fatalf("installer reached nodejs.org off the run's list: %s, refused %q", resp.Status, refused.String())
 	}
 }
