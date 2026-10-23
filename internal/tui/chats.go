@@ -411,7 +411,7 @@ func stack(lines, bx []string, h int, off *int, s0, s1 int, bottom bool) []strin
 	for i := range bx {
 		bx[i] = "  " + bx[i]
 	}
-	room := h - len(bx)
+	room := max(0, h-len(bx))
 	if len(lines) <= room {
 		*off = 0
 		if bottom {
@@ -423,7 +423,7 @@ func stack(lines, bx []string, h int, off *int, s0, s1 int, bottom bool) []strin
 	end := len(lines) - *off
 	if s1 > s0 { // keep the selected thread in view
 		if s1 > end {
-			end = s1
+			end = min(s1, len(lines))
 		}
 		if s0 < end-room {
 			end = min(len(lines), s0+room)

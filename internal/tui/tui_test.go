@@ -111,3 +111,21 @@ func TestViewsFitTheScreen(t *testing.T) {
 		checkWidth(t, m.View(), w, h, "help")
 	}
 }
+
+func TestStackSurvivesTinyWindows(t *testing.T) {
+	lines := []string{"a", "b", "c", "d"}
+	bx := []string{"1", "2", "3", "4", "5"}
+	for h := -1; h <= 8; h++ {
+		for _, sel := range [][2]int{{0, 0}, {0, 2}, {3, 9}} {
+			off := 5
+			stack(lines, append([]string(nil), bx...), h, &off, sel[0], sel[1], true)
+		}
+	}
+	for h := 1; h <= 8; h++ {
+		m := testModel(60, h)
+		m.View()
+		m.Update(tea.KeyMsg{Type: tea.KeyRight})
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m.View()
+	}
+}
