@@ -594,10 +594,7 @@ func (m *Module) test(t *Task, p core.Project) error {
 	case len(ch.Protected) > 0 && !m.C.Effects.Approved(p.Name, t.SHA):
 		t.Stage = StagePerson
 		m.save(t, "waiting on the person: changes "+strings.Join(ch.Protected, ", "))
-		m.C.Person.Ask(core.Ask{Kind: "merge", Ref: t.ID + "@" + t.SHA, Project: p.Name, From: t.Worker,
-			Title:  fmt.Sprintf("Merge %q? It changes %s", t.Label(), strings.Join(ch.Protected, ", ")),
-			Detail: fmt.Sprintf("%s\n\nPR: %s", strings.Join(ch.Protected, ", ")+" are yours to merge.", t.PR.URL), Options: []string{"merge", "leave open"},
-			Diff: ch.ProtectedDiff[:min(len(ch.ProtectedDiff), 1<<20)]})
+		m.C.Person.Ask(mergeAsk(t, p, ch))
 		m.Chat.Notify(t.Chat, t.Thread, approveNotice(t.Label(), ch.Protected, t.PR.URL))
 	case ch.Small || m.C.Effects.Reviewed(p.Name, t.SHA):
 		t.Stage = StageMerging
@@ -607,6 +604,15 @@ func (m *Module) test(t *Task, p core.Project) error {
 		m.save(t, "tests passed; asking for a read")
 	}
 	return nil
+}
+
+// mergeAsk asks the person to merge a change to protected files, carrying the
+// whole diff of those files so they see every change they approve.
+func mergeAsk(t *Task, p core.Project, ch core.Change) core.Ask {
+	return core.Ask{Kind: "merge", Ref: t.ID + "@" + t.SHA, Project: p.Name, From: t.Worker,
+		Title:  fmt.Sprintf("Merge %q? It changes %s", t.Label(), strings.Join(ch.Protected, ", ")),
+		Detail: fmt.Sprintf("%s\n\nPR: %s", strings.Join(ch.Protected, ", ")+" are yours to merge.", t.PR.URL), Options: []string{"merge", "leave open"},
+		Diff: ch.ProtectedDiff}
 }
 
 // approveNotice tells the person a change is theirs and where to answer it.
