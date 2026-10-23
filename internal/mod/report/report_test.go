@@ -64,6 +64,12 @@ var leaks = func() []struct{ in, secret string } {
 		{"Set-Cookie: session=4f9a1c7e2b; Path=/", "4f9a1c7e2b"},
 		{"Cookie: theme=dark; sid=hunter2pass", "hunter2pass"},
 		{"api-key: 0123abcd", "0123abcd"},
+		{"auth_token=9f8e7d6c5b", "9f8e7d6c5b"},
+		{"authkey: k3yk3yk3y", "k3yk3yk3y"},
+		{"X-Auth-Token: abc123def", "abc123def"},
+		{"oauth_token=zzq1w2e3", "zzq1w2e3"},
+		{"AUTH=plainpass1", "plainpass1"},
+		{"authorization=dXNlcjpw", "dXNlcjpw"},
 		{"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\nAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----", "AAAAMwAAAAtzc2gtZW"},
 		{"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq9 (clipped", "MIIEpAIBAAKCAQEA7bq9"},
 		{"commit by Ihsan Salari <ihsan.salari@example.com>", "ihsan.salari@example.com"},
@@ -101,6 +107,8 @@ func TestScrubKeepsPlainText(t *testing.T) {
 		"go test ./internal/verylongpackagenamewithoutdigitsatall/...",
 		"exit status 1",
 		"author: Ihsan",
+		"authors: Ihsan, Marta",
+		"Author = Ihsan",
 	} {
 		if out := Scrub(s, ""); out != s {
 			t.Errorf("changed plain text:\n  in:  %s\n  out: %s", s, out)
