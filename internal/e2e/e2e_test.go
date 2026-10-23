@@ -760,7 +760,8 @@ func TestBlockedWorkComesBack(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"tool", "rerun"} {
 		marker := filepath.Join(dir, name)
-		h.seed("me/"+name, map[string]string{".hive/project.json": `{"test": "test -f ` + filepath.ToSlash(marker) + `"}`, ".hive/goals.md": "# Goals\n"})
+		// main is green; only the worker's change (under work/) needs the tool
+		h.seed("me/"+name, map[string]string{".hive/project.json": `{"test": "test -f ` + filepath.ToSlash(marker) + ` || test ! -d work"}`, ".hive/goals.md": "# Goals\n"})
 		h.post("/api/project", map[string]any{"name": name, "repo": "me/" + name}, nil)
 		known := "FAKE:needtool " + filepath.ToSlash(marker)
 		if name == "rerun" {
