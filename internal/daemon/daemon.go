@@ -602,10 +602,16 @@ func (s *server) state() api.State {
 		if !r.Terminal() || recent < 30 {
 			r.System, r.Brief = "", core.Clip(r.Brief, 400)
 			st.Runs = append(st.Runs, r)
+			if !r.Terminal() && st.Offline == "" {
+				st.Offline = r.Offline
+			}
 			if r.Terminal() {
 				recent++
 			}
 		}
+	}
+	if st.Offline == "" {
+		st.Offline = a.Work.Offline()
 	}
 	st.Plans = a.C.Runs.Plans()
 	sw := a.Improve.Sweeps()
