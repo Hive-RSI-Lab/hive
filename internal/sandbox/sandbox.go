@@ -197,8 +197,27 @@ func InsideEnv(home string, network bool) []string {
 		"GIT_CONFIG_NOSYSTEM=1",
 	}
 	if network {
-		p := "http://127.0.0.1:" + ProxyPort
-		env = append(env, "HTTPS_PROXY="+p, "HTTP_PROXY="+p, "https_proxy="+p, "http_proxy="+p, "ALL_PROXY="+p, "NO_PROXY=", "no_proxy=")
+		env = append(env, proxyEnv(ProxyPort)...)
+	}
+	return env
+}
+
+func proxyEnv(port string) []string {
+	p := "http://127.0.0.1:" + port
+	return []string{"HTTPS_PROXY=" + p, "HTTP_PROXY=" + p, "https_proxy=" + p, "http_proxy=" + p, "ALL_PROXY=" + p, "NO_PROXY=", "no_proxy="}
+}
+
+// SeatbeltEnv is the environment Seatbelt gives sp when its egress proxy
+// listens on port: sp's own, with the proxy moved to port, and the proxy set
+// whenever sp has the network, since Seatbelt lets a spec reach only the
+// proxy. It lives here so Linux tests can check it.
+func SeatbeltEnv(sp Spec, port string) []string {
+	var env []string
+	for _, kv := range sp.Env {
+		env = append(env, strings.ReplaceAll(kv, "127.0.0.1:"+ProxyPort, "127.0.0.1:"+port))
+	}
+	if sp.Network {
+		env = append(env, proxyEnv(port)...)
 	}
 	return env
 }

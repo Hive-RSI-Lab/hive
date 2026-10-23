@@ -27,11 +27,8 @@ import (
 // version it installed to <folder>/<tool>.version. An empty version is the
 // newest stable one.
 func Fetch(folder, tool, version string) (string, error) {
-	if !slices.Contains(sandbox.ToolNames, tool) {
-		return "", fmt.Errorf("no tool %q; the Hive installs %s", tool, strings.Join(sandbox.ToolNames, ", "))
-	}
-	if !versionOK.MatchString(version) {
-		return "", fmt.Errorf("version %q: use digits and dots, like 3.12", version)
+	if err := checkInput(tool, version); err != nil {
+		return "", err
 	}
 	if src := os.Getenv("HIVE_TOOLS_SOURCE"); src != "" { // tests: <src>/<tool>.tar.gz and its .sha256
 		return unpack(folder, tool, "", "file://"+filepath.Join(src, tool+".tar.gz"), "")
@@ -40,6 +37,16 @@ func Fetch(folder, tool, version string) (string, error) {
 		return "", fmt.Errorf("tools install on Linux and macOS (on Windows, inside the WSL sandbox), not %s", runtime.GOOS)
 	}
 	return map[string]func(string, string) (string, error){"python": python, "uv": uv, "node": node, "go": goTool}[tool](folder, version)
+}
+
+func checkInput(tool, version string) error {
+	if !slices.Contains(sandbox.ToolNames, tool) {
+		return fmt.Errorf("no tool %q; the Hive installs %s", tool, strings.Join(sandbox.ToolNames, ", "))
+	}
+	if !versionOK.MatchString(version) {
+		return fmt.Errorf("version %q: use digits and dots, like 3.12", version)
+	}
+	return nil
 }
 
 var versionOK = regexp.MustCompile(`^([0-9][0-9.]*)?$`)
@@ -166,6 +173,10 @@ func unpackSum(folder, tool, version, url, sub, sum string) (string, error) {
 	if sum == "" || !strings.EqualFold(hex.EncodeToString(got[:]), sum) {
 		return "", fmt.Errorf("%s: checksum mismatch (got %x, want %q); nothing installed", url, got, sum)
 	}
+	stale, _ := filepath.Glob(filepath.Join(folder, "."+tool+"-*")) // left by an install the sandbox timed out
+	for _, p := range stale {
+		os.RemoveAll(p)
+	}
 	tmp, err := os.MkdirTemp(folder, "."+tool+"-")
 	if err != nil {
 		return "", err
@@ -185,12 +196,22 @@ func unpackSum(folder, tool, version, url, sub, sum string) (string, error) {
 	return version, os.WriteFile(filepath.Join(folder, tool+".version"), []byte(version+"\n"), 0o644)
 }
 
-// untar writes a gzipped tar into dir, dropping its top directory.
+// untar writes a gzipped tar into dir, dropping its top directory. Every
+// write goes through an os.Root, so no entry or symlink reaches outside dir,
+// and a link whose target leaves dir is refused.
 func untar(raw []byte, dir string) error {
 	zr, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	tr := tar.NewReader(zr)
 	for {
 		h, err := tr.Next()
@@ -204,19 +225,22 @@ func untar(raw []byte, dir string) error {
 		if rest == "" {
 			continue
 		}
-		p := filepath.Join(dir, rest)
-		if !strings.HasPrefix(p, filepath.Clean(dir)+string(os.PathSeparator)) {
+		p := filepath.Clean(rest)
+		if !filepath.IsLocal(p) {
 			return fmt.Errorf("archive entry %q leaves its folder", h.Name)
 		}
-		os.MkdirAll(filepath.Dir(p), 0o755)
+		root.MkdirAll(filepath.Dir(p), 0o755)
 		switch h.Typeflag {
 		case tar.TypeDir:
-			err = os.MkdirAll(p, 0o755)
+			err = root.MkdirAll(p, 0o755)
 		case tar.TypeSymlink:
-			err = os.Symlink(h.Linkname, p)
+			if filepath.IsAbs(h.Linkname) || !filepath.IsLocal(filepath.Join(filepath.Dir(p), h.Linkname)) {
+				return fmt.Errorf("archive link %q -> %q leaves its folder", h.Name, h.Linkname)
+			}
+			err = root.Symlink(h.Linkname, p)
 		case tar.TypeReg:
 			var f *os.File
-			if f, err = os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, h.FileInfo().Mode().Perm()|0o200); err == nil {
+			if f, err = root.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, h.FileInfo().Mode().Perm()|0o200); err == nil {
 				_, err = io.Copy(f, tr)
 				f.Close()
 			}

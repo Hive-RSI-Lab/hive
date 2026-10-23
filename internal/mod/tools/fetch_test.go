@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 )
 
 // tgz builds a gzipped tar of name -> content (a "->" prefix is a symlink).
@@ -108,6 +110,9 @@ func TestFetchRefusesOddInput(t *testing.T) {
 	if _, err := Fetch(t.TempDir(), "rust", ""); err == nil {
 		t.Fatal("an unknown tool was accepted")
 	}
+	if _, err := (&Module{}).Install("rust", ""); err == nil || !strings.Contains(err.Error(), "no tool") {
+		t.Fatalf("Install didn't refuse an unknown tool before starting a sandbox: %v", err)
+	}
 }
 
 func TestSumFor(t *testing.T) {
@@ -117,5 +122,80 @@ func TestSumFor(t *testing.T) {
 	}
 	if got := sumFor(sums, "node-v1-linux-arm64.tar.gz"); got != "" {
 		t.Fatalf("got %q for a missing name", got)
+	}
+}
+
+// ordered builds a gzipped tar from name, body pairs in order ("->" is a symlink).
+func ordered(t *testing.T, pairs ...string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	for i := 0; i < len(pairs); i += 2 {
+		h := &tar.Header{Name: pairs[i], Mode: 0o755, Size: int64(len(pairs[i+1])), Typeflag: tar.TypeReg}
+		if target, ok := strings.CutPrefix(pairs[i+1], "->"); ok {
+			h = &tar.Header{Name: pairs[i], Linkname: target, Typeflag: tar.TypeSymlink}
+		}
+		tw.WriteHeader(h)
+		if h.Typeflag == tar.TypeReg {
+			tw.Write([]byte(pairs[i+1]))
+		}
+	}
+	tw.Close()
+	zw.Close()
+	return buf.Bytes()
+}
+
+func TestArchiveLinkCannotLeaveItsFolder(t *testing.T) {
+	for _, link := range []string{"->../go/bin", "->/tmp"} {
+		folder := t.TempDir()
+		os.MkdirAll(filepath.Join(folder, "go", "bin"), 0o755)
+		os.WriteFile(filepath.Join(folder, "go", "bin", "go"), []byte("real"), 0o755)
+		arc := ordered(t, "top/pivot", link, "top/pivot/go", "evil")
+		url := serve(t, map[string][]byte{"/x.tar.gz": arc})
+		if _, err := unpackSum(folder, "node", "1", url+"/x.tar.gz", "", sum(arc)); err == nil {
+			t.Fatalf("a link %s out of the folder was accepted", link)
+		}
+		if b, _ := os.ReadFile(filepath.Join(folder, "go", "bin", "go")); string(b) != "real" {
+			t.Fatalf("another tool was overwritten through %s: %q", link, b)
+		}
+	}
+}
+
+func TestUnpackSweepsStaleTemps(t *testing.T) {
+	folder := t.TempDir()
+	stale := filepath.Join(folder, ".node-123")
+	os.MkdirAll(filepath.Join(stale, "bin"), 0o755)
+	arc := tgz(t, map[string]string{"node-v1/bin/node": "x"})
+	url := serve(t, map[string][]byte{"/n.tar.gz": arc})
+	if _, err := unpackSum(folder, "node", "1", url+"/n.tar.gz", "", sum(arc)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("a temp dir left by a timed-out install was not swept")
+	}
+}
+
+// Seatbelt runs on host paths and lets a spec reach only its egress proxy,
+// so the installer's spec there needs a writable HOME and the proxy.
+func TestInstallerOnSeatbeltGetsProxyAndHome(t *testing.T) {
+	folder, home := t.TempDir(), t.TempDir()
+	sp := installSpec(sandbox.Bare{}, folder, home, []string{"/opt/hive"}, filepath.Join(home, "log"), "node", "")
+	env := strings.Join(sandbox.SeatbeltEnv(sp, "4242"), "\n")
+	for _, want := range []string{"HTTPS_PROXY=http://127.0.0.1:4242", "https_proxy=http://127.0.0.1:4242", "HOME=" + home} {
+		if !strings.Contains(env, want+"\n") && !strings.HasSuffix(env, want) {
+			t.Fatalf("installer env under Seatbelt lacks %s:\n%s", want, env)
+		}
+	}
+	rw := false
+	for _, m := range sp.Mounts {
+		rw = rw || m.RW && m.Host == home
+	}
+	if !rw || sp.Argv[0] != "/opt/hive" || sp.Argv[2] != folder {
+		t.Fatalf("installer spec: home writable %v, argv %q", rw, sp.Argv)
+	}
+	sp.Network = false
+	if env := strings.Join(sandbox.SeatbeltEnv(sp, "4242"), "\n"); strings.Contains(env, "PROXY") {
+		t.Fatalf("a spec with no network got the proxy:\n%s", env)
 	}
 }
