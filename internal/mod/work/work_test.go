@@ -151,6 +151,15 @@ func TestBriefNamesItsProject(t *testing.T) {
 	}
 }
 
+// Nothing files a brief into the only project unasked: the ask may be a
+// module or about the Hive.
+func TestBriefWithoutProjectRefused(t *testing.T) {
+	m, _, _, _ := noCommitRig(t, 0)
+	if _, err := m.File(Brief{Title: "a cost ledger", From: "person"}); err == nil || !strings.Contains(err.Error(), "one of: p") {
+		t.Fatalf("want a refusal naming the projects, got %v", err)
+	}
+}
+
 // A revert the Hive made has no worker, so findings on it stop the task
 // cleanly instead of reopening a run that doesn't exist.
 func TestRevertFindingsStop(t *testing.T) {

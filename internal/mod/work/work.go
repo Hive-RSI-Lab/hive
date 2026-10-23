@@ -119,7 +119,8 @@ type Module struct {
 	tasks map[string]*Task
 	busy  map[string]bool
 	// mainRed holds project@sha for every main commit whose red tests were
-	// already raised, so each is raised once whatever the tasks say now.
+	// already raised, so each is raised once whatever the tasks say now. It
+	// grows by one key per red main commit and isn't pruned; that's small.
 	mainRed map[string]bool
 }
 
@@ -129,7 +130,7 @@ func New(c *core.Core, a *agents.Agents, ch *chat.Module) *Module {
 	apply := func(e core.Event) {
 		if e.Kind == "alert.raised" {
 			var a struct{ Kind, Project, SHA string }
-			if e.Decode(&a) == nil && a.Kind == "main-red" {
+			if e.Decode(&a) == nil && a.Kind == "main-red" && a.SHA != "" {
 				m.mu.Lock()
 				m.mainRed[a.Project+"@"+a.SHA] = true
 				m.mu.Unlock()
@@ -206,15 +207,11 @@ func (m *Module) File(b Brief) (Task, error) {
 		return Task{}, errors.New("a brief needs a title")
 	}
 	if b.Project == "" {
-		ps := m.C.Projects.List()
-		if len(ps) != 1 {
-			names := []string{}
-			for _, p := range ps {
-				names = append(names, p.Name)
-			}
-			return Task{}, fmt.Errorf("say which project (one of: %s)", strings.Join(names, ", "))
+		names := []string{}
+		for _, p := range m.C.Projects.List() {
+			names = append(names, p.Name)
 		}
-		b.Project = ps[0].Name
+		return Task{}, fmt.Errorf("say which project (one of: %s)", strings.Join(names, ", "))
 	}
 	if _, ok := m.C.Projects.Get(b.Project); !ok {
 		return Task{}, fmt.Errorf("no project %q", b.Project)
@@ -689,6 +686,7 @@ func (m *Module) waitOnMain(t *Task, p core.Project, main string, mc core.Check)
 	}
 	m.mu.Lock()
 	raised := m.mainRed[p.Name+"@"+main]
+	m.mainRed[p.Name+"@"+main] = true
 	m.mu.Unlock()
 	if !raised {
 		m.C.J.MustAppend("alert.raised", map[string]string{"kind": "main-red", "project": p.Name, "sha": main,
