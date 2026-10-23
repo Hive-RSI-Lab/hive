@@ -35,3 +35,19 @@ func TestRepeatedBaselineAlertReachesTheLead(t *testing.T) {
 		t.Fatalf("the lead was told %d times, want once with the output", told)
 	}
 }
+
+// A journal that already holds several failed starts at main's commit (from
+// before an upgrade or a restart) still reaches the lead, once.
+func TestEarlierBaselineFailuresStillReachTheLead(t *testing.T) {
+	m := rig(t)
+	p, _ := m.C.Projects.Get("hive")
+	ms := Measurement{Project: "hive", SHA: "abc1234", TestsOK: true, Note: "start: score did not produce a number: 59.93\nrun 1: 59.34 tokens/s"}
+	for range 3 {
+		m.record(ms)
+	}
+	m.noStart(p, ms)
+	m.noStart(p, ms)
+	if n := len(m.C.Runs.List(func(r *core.Run) bool { return r.Project == "hive" && strings.HasPrefix(r.Role, "lead") })); n != 1 {
+		t.Fatalf("earlier failed starts started %d leads, want 1", n)
+	}
+}

@@ -210,9 +210,9 @@ func (m *Module) baseline(p core.Project) {
 	m.noStart(p, ms)
 }
 
-// noStart records a start with no number and raises the alert. The second
-// time it happens at one commit, the project's lead gets it as work: a
-// retry alone won't fix a command whose output can't be read.
+// noStart records a start with no number and raises the alert. Once it has
+// failed more than once at one commit, the project's lead gets it as work,
+// once per commit: a retry alone won't fix a command whose output can't be read.
 func (m *Module) noStart(p core.Project, ms Measurement) {
 	m.record(ms)
 	note := strings.TrimPrefix(ms.Note, "start: ")
@@ -223,11 +223,18 @@ func (m *Module) noStart(p core.Project, ms Measurement) {
 			n++
 		}
 	}
-	if n == 2 {
-		m.Chat.EnsureProject(p.Name)
-		m.Chat.Post("project:"+p.Name, "", "improve", "Main of "+p.Name+" at "+core.Short(ms.SHA)+" has failed to give a starting score twice, so the keep-or-revert loop can't judge any change. "+
-			"Look at the output below, fix the test or score command in .hive/project.json (the score is the last word of the output, or a line that is a number alone), and ask the person if you can't:\n"+core.Clip(note, 1500))
+	if n < 2 {
+		return
 	}
+	head := "Main of " + p.Name + " at " + core.Short(ms.SHA) + " has failed"
+	for _, x := range m.Chat.Messages("project:" + p.Name) {
+		if x.From == "improve" && strings.HasPrefix(x.Text, head) {
+			return // told already at this commit
+		}
+	}
+	m.Chat.EnsureProject(p.Name)
+	m.Chat.Post("project:"+p.Name, "", "improve", head+" to give a starting score more than once, so the keep-or-revert loop can't judge any change. "+
+		"Look at the output below, fix the test or score command in .hive/project.json (the score is the last word of the output, or a line that is a number alone), and ask the person if you can't:\n"+core.Clip(note, 1500))
 }
 
 func (m *Module) measureLoop() {
