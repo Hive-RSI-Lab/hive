@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,24 @@ func TestStackSurvivesTinyWindows(t *testing.T) {
 		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		m.View()
 	}
+}
+
+// TestModuleDetailReachesEveryProject: with more projects than rows, moving
+// down the list scrolls it, so the last project can be selected.
+func TestModuleDetailReachesEveryProject(t *testing.T) {
+	m := testModel(80, 14)
+	for i := 0; i < 30; i++ {
+		m.st.Projects = append(m.st.Projects, api.ProjectView{Project: core.Project{Name: fmt.Sprintf("proj%02d", i)}})
+	}
+	m.pick(sideRow{sec: secModules}) // detail shows in the main pane outside Chats
+	m.stack = []detail{{kind: "module", id: "agents"}}
+	for range m.projectNames() {
+		m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if view := m.View(); !strings.Contains(view, "proj29") {
+		t.Fatalf("the last project isn't reachable:\n%s", view)
+	}
+	checkWidth(t, m.View(), 80, 14, "module detail")
 }
 
 // The thread-pane tests from main, moved onto the redesigned channel pane:
