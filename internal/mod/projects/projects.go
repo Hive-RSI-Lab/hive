@@ -251,7 +251,7 @@ func (m *Module) Status(r core.Run) map[string]any {
 		if a.Project != "" && m.C.Runs.Walled(r, a.Project) != nil {
 			continue
 		}
-		waiting = append(waiting, a.Title)
+		waiting = append(waiting, fmt.Sprintf("%s (from %s; the person answers in Waiting, or %s approve|refuse %s)", a.Title, a.From, core.Cmd, a.ID))
 	}
 	return map[string]any{"projects": ps, "waiting_on_person": waiting, "config": View(m.C.WS.LoadConfig())}
 }
