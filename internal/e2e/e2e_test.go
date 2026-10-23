@@ -821,7 +821,13 @@ func TestWaitingReachesThePerson(t *testing.T) {
 func TestBlockedWorkComesBack(t *testing.T) {
 	t.Parallel()
 	h := start(t)
-	dir := t.TempDir()
+	// the sandboxed check sees system dirs like /var, not the test's temp dir
+	dir, err := os.MkdirTemp("/var/tmp", "hive-tool-")
+	if err != nil {
+		dir = t.TempDir()
+	} else {
+		t.Cleanup(func() { os.RemoveAll(dir) })
+	}
 	for _, name := range []string{"tool", "rerun"} {
 		marker := filepath.Join(dir, name)
 		// main is green; only the worker's change (under work/) needs the tool
