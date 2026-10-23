@@ -40,6 +40,7 @@ type State struct {
 	Workspace  string             `json:"workspace"`
 	Sandbox    string             `json:"sandbox"`
 	SandboxErr string             `json:"sandbox_err,omitempty"`
+	Offline    string             `json:"offline,omitempty"` // what the Hive can't reach right now, in one plain line
 	Projects   []ProjectView      `json:"projects"`
 	Runs       []core.Run         `json:"runs"`
 	Plans      []core.Plan        `json:"plans"`

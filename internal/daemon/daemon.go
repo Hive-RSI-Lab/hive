@@ -490,7 +490,13 @@ func (s *server) routes() http.Handler {
 		}
 		return evs, nil
 	})
-	h("/api/update", func(*http.Request) (any, error) { return a.Release.Update() })
+	h("/api/update", func(r *http.Request) (any, error) {
+		var b struct{ Release string }
+		if err := decode(r, &b); err != nil {
+			return nil, err
+		}
+		return a.Release.Update(b.Release)
+	})
 	h("/api/shutdown", func(*http.Request) (any, error) {
 		go func() { time.Sleep(100 * time.Millisecond); s.cancel() }()
 		return "stopping", nil
@@ -612,10 +618,16 @@ func (s *server) state() api.State {
 		if !r.Terminal() || recent < 30 {
 			r.System, r.Brief = "", core.Clip(r.Brief, 400)
 			st.Runs = append(st.Runs, r)
+			if !r.Terminal() && st.Offline == "" {
+				st.Offline = r.Offline
+			}
 			if r.Terminal() {
 				recent++
 			}
 		}
+	}
+	if st.Offline == "" {
+		st.Offline = a.Work.Offline()
 	}
 	st.Plans = a.C.Runs.Plans()
 	sw := a.Improve.Sweeps()
