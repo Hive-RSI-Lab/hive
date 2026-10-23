@@ -147,6 +147,9 @@ func (m *model) dashRows() []row {
 		for _, r := range m.st.Requests {
 			out := r.Outcome
 			if out == "" {
+				out = r.State // a warden or panel may still be weighing it
+			}
+			if out == "asked" {
 				out = "waiting on you"
 			}
 			add(row{key: "req:" + r.ID, depth: 1, text: fmt.Sprintf("%s  %s  %s", r.Created.Local().Format("Mon 15:04"), core.Clip(r.Want, 60), stDim.Render(out))})
@@ -397,6 +400,8 @@ func (m *model) keyDetailAction(d *detail, key string) (tea.Model, tea.Cmd) {
 				allow := !contains(mod.Projects, p)
 				return m, m.post("/api/module/access", map[string]any{"module": mod.Name, "project": p, "allow": allow}, "access updated")
 			}
+		case "r":
+			return m, m.post("/api/module/review", map[string]any{"module": mod.Name}, "its code will be read again")
 		}
 	}
 	return m, nil
@@ -484,6 +489,7 @@ func (m *model) viewDetail(d *detail) []string {
 		lines = append(lines, indent(wrap(mod.Description, w-2), "  ")...)
 		lines = append(lines, "", stTitle.Render("projects that may use it"))
 		all := contains(mod.Projects, "*")
+		top := len(lines)
 		for i, p := range m.projectNames() {
 			mark := "[ ]"
 			if all || contains(mod.Projects, p) {
@@ -498,8 +504,8 @@ func (m *model) viewDetail(d *detail) []string {
 			}
 			lines = append(lines, line)
 		}
-		lines = append(lines, "", stDim.Render("space grant or remove"))
-		return lines
+		lines = append(lines, "", stDim.Render("space grant or remove · r read its code again"))
+		return window(lines, top+d.sel, m.bodyHeight())
 	default:
 		lines = append(lines, wrap(d.text, w)...)
 	}
@@ -663,6 +669,7 @@ func (m *model) settings() []setting {
 		{label: "autonomy", value: strconv.Itoa(c.Autonomy) + "  " + autonomyText(c.Autonomy), key: "autonomy"},
 		{label: "harness", value: c.Harness, key: "harness"},
 		{label: "model", value: c.Model, key: "model"},
+		{label: "lead model", value: c.LeadModel, key: "lead_model"},
 		{label: "reviewer model", value: c.ReviewerModel, key: "reviewer_model"},
 		{label: "review rounds", value: strconv.Itoa(c.ReviewRounds), key: "review_rounds"},
 		{label: "sandbox", value: sandboxVal, key: "sandbox"},
@@ -759,6 +766,8 @@ func (m *model) saveSetting(v string) tea.Cmd {
 		c.Harness = v
 	case key == "model":
 		c.Model = v
+	case key == "lead_model":
+		c.LeadModel = v
 	case key == "reviewer_model":
 		c.ReviewerModel = v
 	case key == "review_rounds":
@@ -784,6 +793,10 @@ func (m *model) saveSetting(v string) tea.Cmd {
 
 func (m *model) viewSettings() []string {
 	var lines []string
+	if m.st.ConfigErr != "" { // first, so a long list never scrolls it away
+		lines = append(lines, stBad.Render(clip("config.json: "+m.st.ConfigErr, m.w)), "")
+	}
+	top := len(lines)
 	for i, s := range m.settings() {
 		line := fmt.Sprintf("%-26s %s", s.label, s.value)
 		if i == m.setSel {
@@ -795,7 +808,7 @@ func (m *model) viewSettings() []string {
 		lines = append(lines, "", m.input.View())
 	}
 	lines = append(lines, "", stDim.Render(fmt.Sprintf("Hive %s · %s · settings in %s", m.st.Version, m.st.Workspace, ".hive/config.json")))
-	return window(lines, m.setSel, m.bodyHeight())
+	return window(lines, top+m.setSel, m.bodyHeight())
 }
 
 func fmtNum(f float64) string { return strconv.FormatFloat(f, 'g', 6, 64) }

@@ -50,7 +50,7 @@ type Task struct {
 	From      string            `json:"from"` // run id, person, or sweep run
 	Chat      string            `json:"chat,omitempty"`
 	Thread    string            `json:"thread,omitempty"`
-	Kind      string            `json:"kind"` // work | revert
+	Kind      string            `json:"kind"` // work | revert | helper (spawned, no issue)
 	Stage     string            `json:"stage"`
 	Reason    string            `json:"reason,omitempty"`
 	Issue     core.Issue        `json:"issue"`
@@ -108,18 +108,35 @@ type Module struct {
 	// one ran and succeeded (the risk module).
 	Steps func(run string) (string, bool)
 
+	// Weigh settles a merge that changes protected paths as autonomy says
+	// (the risk module) and returns who decides; unset, the person does.
+	Weigh func(core.Ask) string
+
 	// OnMerged is called after a task's merge is recorded (the improve module measures).
 	OnMerged func(t Task)
 
 	mu    sync.Mutex
 	tasks map[string]*Task
 	busy  map[string]bool
+	// mainRed holds project@sha for every main commit whose red tests were
+	// already raised, so each is raised once whatever the tasks say now. It
+	// grows by one key per red main commit and isn't pruned; that's small.
+	mainRed map[string]bool
 }
 
 // New loads tasks and registers the brief op.
 func New(c *core.Core, a *agents.Agents, ch *chat.Module) *Module {
-	m := &Module{C: c, Agents: a, Chat: ch, tasks: map[string]*Task{}, busy: map[string]bool{}}
+	m := &Module{C: c, Agents: a, Chat: ch, tasks: map[string]*Task{}, busy: map[string]bool{}, mainRed: map[string]bool{}}
 	apply := func(e core.Event) {
+		if e.Kind == "alert.raised" {
+			var a struct{ Kind, Project, SHA string }
+			if e.Decode(&a) == nil && a.Kind == "main-red" && a.SHA != "" {
+				m.mu.Lock()
+				m.mainRed[a.Project+"@"+a.SHA] = true
+				m.mu.Unlock()
+			}
+			return
+		}
 		if e.Kind != "task.saved" {
 			return
 		}
@@ -190,15 +207,11 @@ func (m *Module) File(b Brief) (Task, error) {
 		return Task{}, errors.New("a brief needs a title")
 	}
 	if b.Project == "" {
-		ps := m.C.Projects.List()
-		if len(ps) != 1 {
-			names := []string{}
-			for _, p := range ps {
-				names = append(names, p.Name)
-			}
-			return Task{}, fmt.Errorf("say which project (one of: %s)", strings.Join(names, ", "))
+		names := []string{}
+		for _, p := range m.C.Projects.List() {
+			names = append(names, p.Name)
 		}
-		b.Project = ps[0].Name
+		return Task{}, fmt.Errorf("say which project (one of: %s)", strings.Join(names, ", "))
 	}
 	if _, ok := m.C.Projects.Get(b.Project); !ok {
 		return Task{}, fmt.Errorf("no project %q", b.Project)
@@ -218,16 +231,77 @@ func (m *Module) opBrief(r core.Run, args json.RawMessage) (any, error) {
 	if b.Project == "" {
 		b.Project = r.Project
 	}
-	if r.Role == "lead" {
-		b.Chat, b.Thread = m.Chat.CurrentThread(r)
-	} else if parent, ok := m.taskOf(r.ID); ok {
-		b.Chat, b.Thread = parent.Chat, parent.Thread
+	// An agent with no project of its own names the target: the only project
+	// is not a safe guess, since the ask may be a module or about the Hive.
+	if b.Project == "" {
+		names := []string{}
+		for _, p := range m.C.Projects.List() {
+			if m.C.Runs.Walled(r, p.Name) == nil {
+				names = append(names, p.Name)
+			}
+		}
+		return nil, fmt.Errorf("say which project with --project (one of: %s) and tell the person why; a new module gets a project of its own first (create_project), then install_module --project", strings.Join(names, ", "))
 	}
+	if err := m.C.Runs.Walled(r, b.Project); err != nil {
+		return nil, err
+	}
+	b.Chat, b.Thread = m.thread(r)
 	t, err := m.File(b)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]string{"task": t.ID, "note": "filed; it becomes an issue and a worker shortly"}, nil
+}
+
+// thread is the chat thread that hears about work r asks for: a lead's
+// current thread, or the thread of the task r works on.
+func (m *Module) thread(r core.Run) (string, string) {
+	if r.Role == "lead" {
+		return m.Chat.CurrentThread(r)
+	}
+	if parent, ok := m.taskOf(r.ID); ok {
+		return parent.Chat, parent.Thread
+	}
+	return "", ""
+}
+
+// Spawn is the core's spawn hook. A helper worker on a project ships like any
+// worker: it gets a task with no issue, so its commits go to their own branch
+// and pull request, are tested, reviewed and merged, and its parent's thread
+// hears how that went. It starts that run itself. Reviewers and helpers with no
+// project go to the agents module, and the spawn op starts those.
+func (m *Module) Spawn(parent core.Run, role, project, brief, model string) (core.RunSpec, error) {
+	p, ok := m.C.Projects.Get(project)
+	if role != "worker" || !ok {
+		return m.Agents.Spawner(parent, role, project, brief, model)
+	}
+	base, err := m.C.Effects.Sync(p)
+	if err != nil {
+		return core.RunSpec{}, err
+	}
+	if base == "" { // no task can land a branch off an empty main, so its commits would go nowhere
+		return core.RunSpec{}, fmt.Errorf("project %s has no commit on main yet, so a helper worker's commits could never land; file a brief instead", p.Name)
+	}
+	t := &Task{ID: core.NewID(), Project: p.Name, Title: strings.TrimSpace(brief), From: parent.ID, Kind: "helper",
+		Stage: StageWorking, Base: base, Created: time.Now().UTC()}
+	t.Chat, t.Thread = m.thread(parent)
+	t.Worker, t.Branch = "w-"+t.ID, "hive/"+t.ID
+	dir, err := m.C.Effects.NewCheckout(p, t.Worker, base)
+	if err != nil {
+		return core.RunSpec{}, err
+	}
+	s := m.Agents.Spec(t.Worker, "worker", p.Name, dir, brief+"\n\n(You are a helper spawned by "+parent.ID+"; your account goes back to it, and your commits get their own pull request as task "+t.ID+".)")
+	s.Task, s.Parent = t.ID, parent.ID
+	if model != "" {
+		s.Model = model
+	}
+	// Like startWorker, the run starts before the task names it, so a task
+	// never points at a run that doesn't exist.
+	if _, err := m.C.Runs.Start(s); err != nil {
+		return core.RunSpec{}, err
+	}
+	m.save(t, "helper of "+parent.ID+": worker "+t.Worker)
+	return s, nil
 }
 
 func (m *Module) taskOf(runID string) (Task, bool) {
@@ -480,7 +554,9 @@ func (m *Module) checkWorker(t *Task, p core.Project) error {
 	case core.StatusBlocked:
 		t.Stage, t.Reason = StageBlocked, finishText(r)
 		m.save(t, "blocked: "+core.Clip(t.Reason, 300))
-		m.C.Effects.Forge.Comment(p.Repo, t.Issue.Number, "The worker stopped:\n\n"+t.Reason)
+		if t.Issue.Number != 0 {
+			m.C.Effects.Forge.Comment(p.Repo, t.Issue.Number, "The worker stopped:\n\n"+t.Reason)
+		}
 		m.C.J.MustAppend("kb.note", map[string]string{"title": "Blocked: " + t.Label(), "text": t.Reason, "project": t.Project, "run": r.ID})
 		m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("Blocked: %q. %s", t.Label(), core.Clip(t.Reason, 400)))
 	case core.StatusStopped:
@@ -523,7 +599,10 @@ func (m *Module) land(t *Task, p core.Project) error {
 	if err := m.C.Effects.Push(p, t.Branch, sha); err != nil {
 		return err
 	}
-	body := finishText(r) + fmt.Sprintf("\n\nCloses #%d\n\n%s", t.Issue.Number, marker(t.ID))
+	body := finishText(r) + "\n\n" + marker(t.ID)
+	if t.Issue.Number != 0 {
+		body = finishText(r) + fmt.Sprintf("\n\nCloses #%d\n\n%s", t.Issue.Number, marker(t.ID))
+	}
 	pr, err := m.C.Effects.Forge.CreatePR(p.Repo, t.Branch, p.Branch, t.Label(), body)
 	if err != nil {
 		return err
@@ -536,9 +615,15 @@ func (m *Module) land(t *Task, p core.Project) error {
 	return nil
 }
 
-// noCommits ends a task whose worker made no commit. An ask whose whole job
-// was a step outside the checkout is done; anything else is blocked.
+// noCommits ends a task whose worker made no commit. A helper's task is done, since its account already went to the agent that spawned it.
+// An ask whose whole job was a step outside the checkout is done; anything else
+// is blocked.
 func (m *Module) noCommits(t *Task, p core.Project, r core.Run) {
+	if t.Kind == "helper" {
+		t.Stage = StageDone
+		m.save(t, "the helper made no commits, so nothing to land")
+		return
+	}
 	var steps string
 	var ok bool
 	if m.Steps != nil {
@@ -593,6 +678,16 @@ func (m *Module) test(t *Task, p core.Project) error {
 		m.C.Effects.Forge.Comment(p.Repo, t.PR.Number, fmt.Sprintf("Tests on %s: **%s**\n\n```\n%s\n```", core.Short(t.SHA), passFail(c.OK), core.Clip(c.Output, 1500)))
 	}
 	if !c.OK {
+		mc, err := m.mainTests(p, main, cfg.Test)
+		if err != nil {
+			return err
+		}
+		if !mc.OK {
+			return m.waitOnMain(t, p, main, mc)
+		}
+		if ok, err := m.catchUp(t, p, main, "tests failed but pass on main"); ok || err != nil {
+			return err
+		}
 		return m.sendBack(t, p, "The tests failed on your commit "+core.Short(t.SHA)+":\n\n"+core.Clip(c.Output, 3000))
 	}
 	ch, err := m.C.Effects.Classify(p, main, t.SHA)
@@ -602,11 +697,21 @@ func (m *Module) test(t *Task, p core.Project) error {
 	switch {
 	case len(ch.Protected) > 0 && !m.C.Effects.Approved("merge", p.Name, t.SHA):
 		t.Stage = StagePerson
-		m.save(t, "waiting on the person: changes "+strings.Join(ch.Protected, ", "))
-		m.C.Person.Ask(core.Ask{Kind: "merge", Ref: t.ID + "@" + t.SHA, Project: p.Name, From: t.Worker,
+		diff, _ := core.Git(m.C.WS.Project(p.Name), append([]string{"diff", ch.Base, t.SHA, "--"}, ch.Protected...)...)
+		a := core.Ask{Kind: "merge", Ref: t.ID + "@" + t.SHA, Project: p.Name, From: t.Worker,
 			Title:  fmt.Sprintf("Merge %q? It changes %s", t.Label(), strings.Join(ch.Protected, ", ")),
-			Detail: fmt.Sprintf("%s\n\nPR: %s", strings.Join(ch.Protected, ", ")+" are yours to merge.", t.PR.URL), Options: []string{"merge", "leave open"}})
-		m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("%q changes %s, which is yours to approve. It's waiting on you: %s", t.Label(), strings.Join(ch.Protected, ", "), t.PR.URL))
+			Detail: fmt.Sprintf("These hold the project's goals, score or settings. PR: %s\n\n%s", t.PR.URL, core.Clip(diff, 6000)), Options: []string{"merge", "leave open"}}
+		// Saved before Weigh: a warden's answer may reach onPersonMerge first.
+		m.save(t, "waiting for an approval: changes "+strings.Join(ch.Protected, ", "))
+		who := "person"
+		if m.Weigh != nil {
+			who = m.Weigh(a)
+		} else {
+			m.C.Person.Ask(a)
+		}
+		if who == "person" {
+			m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("%q changes %s, which is yours to approve. It's waiting on you: %s", t.Label(), strings.Join(ch.Protected, ", "), t.PR.URL))
+		}
 	case ch.Small || m.C.Effects.Reviewed(p, ch, t.SHA):
 		t.Stage = StageMerging
 		m.save(t, "tests passed; "+map[bool]string{true: "small change, no read needed", false: "already read"}[ch.Small])
@@ -615,6 +720,63 @@ func (m *Module) test(t *Task, p core.Project) error {
 		m.save(t, "tests passed; asking for a read")
 	}
 	return nil
+}
+
+// mainTests is main's own test result, measured once per main commit (the
+// baseline and the post-merge measurement usually already have it).
+func (m *Module) mainTests(p core.Project, main, command string) (core.Check, error) {
+	if c, ok := m.C.Effects.GetCheck(p.Name, main, "test"); ok {
+		return c, nil
+	}
+	if _, err := m.C.Sandbox(); err != nil {
+		return core.Check{}, err
+	}
+	return m.C.Effects.RunCheck(p, main, "test", command), nil
+}
+
+// waitOnMain holds a red change while main's own tests are red, since the
+// failure can't be told apart from main's. Main's failure is raised once per
+// main commit, not once per waiting change; when main goes green the change
+// is brought up to date and tested again.
+func (m *Module) waitOnMain(t *Task, p core.Project, main string, mc core.Check) error {
+	reason := "waiting on main: its own tests fail at " + core.Short(main) + ", so this failure isn't the worker's"
+	if t.Reason == reason {
+		return nil
+	}
+	m.mu.Lock()
+	raised := m.mainRed[p.Name+"@"+main]
+	m.mainRed[p.Name+"@"+main] = true
+	m.mu.Unlock()
+	if !raised {
+		m.C.J.MustAppend("alert.raised", map[string]string{"kind": "main-red", "project": p.Name, "sha": main,
+			"text": "main's tests fail in " + p.Name + " at " + core.Short(main) + ", so changes with failing tests wait for main to go green: " + core.Clip(mc.Output, 300)})
+	}
+	t.Reason = reason
+	m.save(t, reason)
+	m.C.Effects.Forge.Comment(p.Repo, t.PR.Number, "Main's own tests fail too at "+core.Short(main)+", so this isn't sent back to the worker. It waits for main to go green, then is brought up to date and tested again.")
+	return nil
+}
+
+// catchUp brings t's branch up to date with main and sends it to be tested
+// again. It reports false when the branch already contains main.
+func (m *Module) catchUp(t *Task, p core.Project, main, why string) (bool, error) {
+	if _, err := core.Git(m.C.WS.Project(p.Name), "merge-base", "--is-ancestor", main, t.SHA); err == nil {
+		return false, nil
+	}
+	next, err := m.C.Effects.UpdateBranch(p, t.SHA, main)
+	if errors.Is(err, core.ErrConflict) {
+		t.Reason = ""
+		return true, m.conflict(t, p)
+	}
+	if err != nil {
+		return true, err
+	}
+	if err := m.C.Effects.Push(p, t.Branch, next); err != nil {
+		return true, err
+	}
+	t.SHA, t.Stage, t.Reason = next, StageTesting, ""
+	m.save(t, why+"; branch brought up to date at "+core.Short(next)+", testing again")
+	return true, nil
 }
 
 func passFail(ok bool) string {
@@ -747,21 +909,8 @@ func (m *Module) merge(t *Task, p core.Project) error {
 	if err != nil {
 		return err
 	}
-	if _, err := core.Git(m.C.WS.Project(p.Name), "merge-base", "--is-ancestor", main, t.SHA); err != nil {
-		// Main moved: bring the branch up to date and test again first.
-		next, err := m.C.Effects.UpdateBranch(p, t.SHA, main)
-		if errors.Is(err, core.ErrConflict) {
-			return m.conflict(t, p)
-		}
-		if err != nil {
-			return err
-		}
-		if err := m.C.Effects.Push(p, t.Branch, next); err != nil {
-			return err
-		}
-		t.SHA, t.Stage = next, StageTesting
-		m.save(t, "main moved; branch brought up to date at "+core.Short(next)+", testing again")
-		return nil
+	if ok, err := m.catchUp(t, p, main, "main moved"); ok || err != nil {
+		return err
 	}
 	merged, err := m.C.Effects.Merge(core.MergeRequest{Project: p, PR: t.PR.Number, SHA: t.SHA, Main: main, Subject: t.Label()})
 	var np *core.NeedsPerson
@@ -849,8 +998,9 @@ func (m *Module) onPersonMerge(a core.Ask) {
 		m.save(&t, "the person approved")
 		return
 	}
-	t.Stage, t.Reason = StageStopped, "the person left it open"
+	t.Stage, t.Reason = StageStopped, strings.TrimSuffix("left open: "+a.Note, ": ")
 	m.save(&t, t.Reason)
+	m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("%q was %s: %s", t.Label(), t.Reason, t.PR.URL))
 }
 
 // Stop ends a task on purpose (from the control center).

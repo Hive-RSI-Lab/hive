@@ -1,9 +1,11 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -144,6 +146,10 @@ type Runs struct {
 	tokens  TokenSource
 	tools   func() []string // host programs to expose (hive binary for the sandbox's OS)
 	ops     *Ops
+	projs   *Projects // for which projects' records to hide; nil hides none
+	// ModelFor is the model a persistent run's next turn takes, so a lead
+	// follows a changed setting; empty keeps the run's own.
+	ModelFor func(Run) string
 
 	mu    sync.Mutex
 	runs  map[string]*Run
@@ -152,16 +158,44 @@ type Runs struct {
 	spent map[string]float64 // "2006-01" (UTC) -> what runs cost that month
 }
 
+// codexTokenStuck opens the note on a run whose Codex token folder would not delete.
+const codexTokenStuck = "its Codex token could not be deleted: "
+
 // NewRuns builds the run manager and replays its records.
 func NewRuns(ws Workspace, j *Journal, sb func() (sandbox.Sandbox, error), tokens TokenSource, tools func() []string) *Runs {
 	rs := &Runs{ws: ws, j: j, sandbox: sb, tokens: tokens, tools: tools, runs: map[string]*Run{}, plans: map[string]Plan{}, busy: map[string]bool{}, spent: map[string]float64{}}
 	rs.ops = NewOps(rs)
 	_ = j.Replay(rs.apply)
+	// A crash between writing a turn's token and starting the turn left it behind.
+	stuck := map[string]error{}
+	for _, r := range rs.runs {
+		if HarnessName(r.Harness) == "codex" && r.Status != StatusRunning {
+			if err := rs.dropCodexHome(r.ID); err != nil {
+				stuck[r.ID] = err
+			}
+		}
+	}
 	j.Subscribe(func(e Event) {
 		rs.mu.Lock()
 		rs.apply(e)
 		rs.mu.Unlock()
 	})
+	for id, err := range stuck {
+		why := codexTokenStuck + err.Error()
+		r, _ := rs.Get(id)
+		switch {
+		case r.Status == StatusBlocked && strings.HasPrefix(r.Reason, codexTokenStuck):
+			// already blocked for it; a restart adds nothing
+		case r.Terminal(): // Terminal counts a blocked run too
+			// a finished or already blocked run keeps its status and reason,
+			// and gets the note once
+			if !strings.HasPrefix(r.Progress, codexTokenStuck) {
+				rs.Progress(id, why)
+			}
+		default:
+			rs.SetStatus(id, StatusBlocked, why)
+		}
+	}
 	return rs
 }
 
@@ -175,6 +209,7 @@ type turnStarted struct {
 	Proc      proc.Handle `json:"proc"`
 	Delivered int         `json:"delivered"`
 	Resume    bool        `json:"resume"`
+	Model     string      `json:"model,omitempty"`
 	Login     string      `json:"login,omitempty"`
 }
 
@@ -240,6 +275,9 @@ func (rs *Runs) apply(e Event) {
 		if t.Session != "" {
 			r.Session = t.Session
 		}
+		if t.Model != "" {
+			r.Model = t.Model
+		}
 		r.Waiting = ""
 		if t.Delivered <= len(r.Pending) {
 			r.Pending = r.Pending[t.Delivered:]
@@ -299,6 +337,10 @@ func (rs *Runs) apply(e Event) {
 		if n.Status == StatusQueued || n.Status == StatusIdle {
 			r.Nudges = 0
 		}
+	case "run.held":
+		var n runNote
+		e.Decode(&n)
+		r.Reason = n.Reason
 	case "run.stop":
 		r.StopAsked = true
 	case "run.waiting":
@@ -461,14 +503,22 @@ func (rs *Runs) Spent(month string) float64 {
 	return rs.spent[month]
 }
 
-// Send queues a message for a run's next turn.
-func (rs *Runs) Send(id, text string) error {
+// Takes says why run id can't take a message, or nil if it can.
+func (rs *Runs) Takes(id string) error {
 	r, ok := rs.Get(id)
 	if !ok {
 		return ErrNotFound
 	}
 	if r.Terminal() && !r.Persistent {
 		return fmt.Errorf("run %s has ended (%s)", id, r.Status)
+	}
+	return nil
+}
+
+// Send queues a message for a run's next turn.
+func (rs *Runs) Send(id, text string) error {
+	if err := rs.Takes(id); err != nil {
+		return err
 	}
 	rs.append("run.queued", runNote{ID: id, Text: text})
 	return nil
@@ -515,8 +565,15 @@ func (rs *Runs) Stop(id, reason string) {
 	rs.append("run.status", runNote{ID: id, Status: StatusStopped, Reason: reason})
 }
 
+// Interrupt ends a running turn's process. The turn ends like any interrupted
+// one and is retried on the same checkout, so nothing is started twice.
+func (rs *Runs) Interrupt(id string) bool {
+	r, ok := rs.Get(id)
+	return ok && r.Status == StatusRunning && proc.Alive(r.Proc) && proc.Kill(r.Proc) == nil
+}
+
 // Tick advances every run one step: mailboxes, finished turns, due turns.
-func (rs *Runs) Tick() {
+func (rs *Runs) Tick(cfg Config) {
 	for _, r := range rs.List(func(r *Run) bool { return !r.Terminal() || r.Status == StatusRunning }) {
 		rs.mu.Lock()
 		if rs.busy[r.ID] {
@@ -527,31 +584,31 @@ func (rs *Runs) Tick() {
 		rs.mu.Unlock()
 		go func(r Run) {
 			defer func() { rs.mu.Lock(); delete(rs.busy, r.ID); rs.mu.Unlock() }()
-			rs.step(r)
+			rs.step(r, cfg)
 		}(r)
 	}
 }
 
-func (rs *Runs) step(r Run) {
+func (rs *Runs) step(r Run, cfg Config) {
 	switch r.Status {
 	case StatusRunning:
 		rs.ops.Drain(r)
 		rs.watch(r)
 	case StatusQueued:
-		rs.launch(r)
+		rs.launch(r, cfg)
 	case StatusIdle:
 		rs.ops.Drain(r)
 		if len(r.Pending) > 0 {
-			rs.launch(r)
+			rs.launch(r, cfg)
 		}
 	case StatusParked:
 		if time.Now().After(r.ParkedUntil) {
-			rs.launch(r)
+			rs.launch(r, cfg)
 		}
 	case StatusQuiet:
 		rs.ops.Drain(r)
 		if len(r.Pending) > 0 {
-			rs.launch(r)
+			rs.launch(r, cfg)
 		}
 	}
 }
@@ -643,11 +700,14 @@ func (rs *Runs) endTurn(r Run) {
 		rs.append("plan.usage", Plan{Harness: HarnessName(r.Harness), Login: r.Login, Limit: *tl.Limit, At: time.Now().UTC()})
 	}
 	te := turnEnded{ID: r.ID, Turn: r.Turn, SessionLive: tl.SessionLive, Session: tl.Session, Result: tl.Result}
+	var dropErr error
 	if HarnessName(r.Harness) == "codex" {
-		rs.dropCodexHome(r.ID)
+		dropErr = rs.dropCodexHome(r.ID)
 	}
 	cur, _ := rs.Get(r.ID)
 	switch {
+	case dropErr != nil:
+		te.Status, te.Reason = StatusBlocked, codexTokenStuck+dropErr.Error()
 	case cur.StopAsked:
 		te.Status, te.Reason = StatusStopped, "stopped by the Hive"
 	case limited:
@@ -695,6 +755,9 @@ func (rs *Runs) endTurn(r Run) {
 		if cur.Finish != nil {
 			account = fmt.Sprintf("status: %s\n%s\ntested: %s\nunsure: %s", cur.Finish.Status, cur.Finish.Account, cur.Finish.Tested, cur.Finish.Unsure)
 		}
+		if r.Task != "" && te.Status == StatusDone {
+			account += "\nwhere its commits go: their own pull request, task " + r.Task + "; the thread hears when it merges"
+		}
 		if p, ok := rs.Get(r.Parent); ok && (!p.Terminal() || p.Persistent) {
 			rs.Send(p.ID, fmt.Sprintf("[%s %s finished]\n%s", r.Role, r.ID, account))
 		}
@@ -731,11 +794,14 @@ func tail(path string, n int) string {
 const PendingSep = "\n\n---\n\n"
 
 // launch starts the run's next turn in its sandbox.
-func (rs *Runs) launch(r Run) {
-	cfg := rs.ws.LoadConfig()
-	if why := Strained(cfg.MemFloorMB, cfg.PressureMax); why != "" {
-		if why = "waiting: " + why; r.Status != StatusQueued || r.Reason != why {
-			rs.append("run.status", runNote{ID: r.ID, Status: StatusQueued, Reason: why})
+func (rs *Runs) launch(r Run, cfg Config) {
+	if why := Strained(cfg.MemFloorMB, cfg.MemPressureMax, cfg.CPUPressureMax); why != "" {
+		// The hold keeps the run's status, so a parked run keeps its backoff
+		// and a nudged one its count; the live figures after " (" change
+		// every tick, so only a new kind of hold is journalled.
+		why = "waiting: " + why
+		if kind, _, _ := strings.Cut(why, " ("); !strings.HasPrefix(r.Reason, kind) {
+			rs.append("run.held", runNote{ID: r.ID, Reason: why})
 		}
 		return
 	}
@@ -768,6 +834,11 @@ func (rs *Runs) launch(r Run) {
 		prompt = "Continue."
 	}
 	r.Session = session
+	if rs.ModelFor != nil && r.Persistent {
+		if m := rs.ModelFor(r); m != "" {
+			r.Model = m
+		}
+	}
 	promptFile := filepath.Join(rs.ws.RunHost(r.ID), fmt.Sprintf("turn-%03d.prompt", turn))
 	if err := os.WriteFile(promptFile, []byte(prompt), 0o644); err != nil {
 		rs.append("run.status", runNote{ID: r.ID, Status: StatusParked, Reason: err.Error(), Until: time.Now().Add(time.Minute)})
@@ -794,7 +865,7 @@ func (rs *Runs) launch(r Run) {
 		rs.append("run.status", runNote{ID: r.ID, Status: StatusParked, Reason: "login for " + HarnessName(r.Harness) + ": " + err.Error(), Until: until})
 		return
 	}
-	spec, err := rs.sandboxSpec(sb, h, r, turn, resume, promptFile, tok, codexHome)
+	spec, err := rs.sandboxSpec(cfg, sb, h, r, turn, resume, promptFile, tok, codexHome)
 	if err != nil {
 		rs.append("run.status", runNote{ID: r.ID, Status: StatusParked, Reason: err.Error(), Until: time.Now().Add(5 * time.Minute)})
 		return
@@ -805,11 +876,20 @@ func (rs *Runs) launch(r Run) {
 		return
 	}
 	started = true
-	rs.append("run.turn_started", turnStarted{ID: r.ID, Session: session, Turn: turn, Proc: p, Delivered: delivered, Resume: resume, Login: login.Key()})
+	rs.append("run.turn_started", turnStarted{ID: r.ID, Session: session, Turn: turn, Proc: p, Delivered: delivered, Resume: resume, Login: login.Key(), Model: r.Model})
+}
+
+// RunPath is where a run's agent sees its run dir ($HIVE_RUN).
+func (rs *Runs) RunPath(id string) string {
+	m := sandbox.Mount{Host: rs.ws.RunRO(id), Inside: "/hive/run"}
+	if sb, err := rs.sandbox(); err == nil {
+		return sandbox.InsidePath(sb, m)
+	}
+	return m.Host
 }
 
 // sandboxSpec lays out what the agent sees.
-func (rs *Runs) sandboxSpec(sb sandbox.Sandbox, h harness.Harness, r Run, turn int, resume bool, promptFile string, tok []string, codexHome string) (sandbox.Spec, error) {
+func (rs *Runs) sandboxSpec(cfg Config, sb sandbox.Sandbox, h harness.Harness, r Run, turn int, resume bool, promptFile string, tok []string, codexHome string) (sandbox.Spec, error) {
 	home := sandbox.Mount{Host: rs.ws.RunHome(r.ID), Inside: "/hive/home", RW: true}
 	mounts := []sandbox.Mount{
 		{Host: r.Checkout, Inside: "/work", RW: !r.ReadOnly},
@@ -823,14 +903,18 @@ func (rs *Runs) sandboxSpec(sb sandbox.Sandbox, h harness.Harness, r Run, turn i
 		mounts = append(mounts, sandbox.Mount{Host: rs.ws.Projects(), Inside: "/hive/projects"},
 			sandbox.Mount{Host: rs.ws.Hive(), Inside: "/hive/state"})
 		// Every agent reads the whole Hive but what grants access: the daemon's
-		// API token and the login pool's stored logins.
-		logins := filepath.Join(rs.ws.Hive(), "logins")
-		os.MkdirAll(logins, 0o700) // a login added mid-turn lands under the cover
-		mounts = append(mounts, sandbox.Mount{Host: logins, Inside: "/hive/state/logins", Hide: true})
+		// API token, the login pool's stored logins, and module programs' homes
+		// and logs, where a door module keeps its own service login.
+		for _, d := range []string{"logins", "modules"} {
+			dir := filepath.Join(rs.ws.Hive(), d)
+			os.MkdirAll(dir, 0o700) // one added mid-turn lands under the cover
+			mounts = append(mounts, sandbox.Mount{Host: dir, Inside: "/hive/state/" + d, Hide: true})
+		}
 		if _, err := os.Stat(rs.ws.DaemonFile()); err == nil {
 			mounts = append(mounts, sandbox.Mount{Host: rs.ws.DaemonFile(), Inside: "/hive/state/daemon.json", Hide: true})
 		}
 	}
+	mounts = append(mounts, rs.hideIsolated(r)...)
 	if r.Isolated && sb.Isolated() {
 		// Only granted modules are visible: mount each over an empty modules dir,
 		// which holds their mount points, since bwrap can't make them inside a
@@ -852,7 +936,7 @@ func (rs *Runs) sandboxSpec(sb sandbox.Sandbox, h harness.Harness, r Run, turn i
 	t := harness.Turn{
 		Role: r.Role, SessionID: r.Session, Resume: resume, Model: r.Model, Tools: r.Tools, SystemText: r.System,
 		SystemFile: filepath.Join(in(mounts[1]), "system.md"), ReadOnly: r.ReadOnly, RunDir: in(mounts[1]), Schema: r.Schema, Sandboxed: sb.Isolated(),
-		MaxOutput: rs.ws.LoadConfig().MaxOutputTokens, ConfigDir: cfgDir,
+		MaxOutput: cfg.MaxOutputTokens, ConfigDir: cfgDir,
 	}
 	if r.Budget > 0 {
 		t.MaxBudgetUSD = max(r.Budget-r.Cost, 0.01)
@@ -890,9 +974,9 @@ func (rs *Runs) sandboxSpec(sb sandbox.Sandbox, h harness.Harness, r Run, turn i
 	if !sb.Isolated() && h.Program() == "hive" && len(tools) > 0 {
 		argv[0] = tools[0]
 	}
-	allow := rs.ws.LoadConfig().Egress.For(r.Role)
-	if len(allow) > 0 {
-		allow = append(append([]string{}, allow...), harness.APIHosts(h)...)
+	allow := cfg.Egress.For(r.Role)
+	if allow != nil {
+		allow = append(allow, harness.APIHosts(h)...)
 	}
 	return sandbox.Spec{
 		ID: r.ID, Argv: argv, Env: env, Cwd: in(mounts[0]), Mounts: mounts, Tools: tools,
@@ -901,13 +985,92 @@ func (rs *Runs) sandboxSpec(sb sandbox.Sandbox, h harness.Harness, r Run, turn i
 	}, nil
 }
 
+// Walled refuses r reaching project when either side is an isolated project:
+// an isolated project is reached only from its own runs, and its runs reach
+// no other project. Both come from the core's record of r, never from r.
+func (rs *Runs) Walled(r Run, project string) error {
+	if project == r.Project || rs.projs == nil {
+		return nil
+	}
+	for _, name := range []string{project, r.Project} {
+		if p, ok := rs.projs.Get(name); ok && p.Isolated {
+			return fmt.Errorf("project %q is out of reach of %s's agents", project, r.Project)
+		}
+	}
+	return nil
+}
+
+// hideIsolated covers what isolated projects other than r's own leave in the
+// shared Hive, so r reads none of their code, runs, chats, notes, checks or
+// scores. An isolated run sees only the knowledge base of what is shared, so
+// it gets just the notes covered. The journal holds every project's events in
+// one file, so it is covered whole while any project is isolated. The folders
+// are made first so what lands in them mid-turn is covered too; a run or chat
+// started mid-turn is not, until that agent's next turn.
+func (rs *Runs) hideIsolated(r Run) []sandbox.Mount {
+	if rs.projs == nil {
+		return nil
+	}
+	iso := map[string]bool{}
+	var out []sandbox.Mount
+	var rel []string
+	for _, p := range rs.projs.List() {
+		if !p.Isolated || p.Name == r.Project {
+			continue
+		}
+		iso[p.Name] = true
+		kb := filepath.Join(rs.ws.KB(), "isolated", p.Name)
+		rs.ws.IsolatedKB(p.Name) // never made through a link
+		out = append(out, sandbox.Mount{Host: kb, Inside: "/hive/kb/isolated/" + p.Name, Hide: true})
+		if r.Isolated {
+			continue
+		}
+		if Exists(rs.ws.Project(p.Name)) { // no clone yet: nothing to hide, and no mount point
+			out = append(out, sandbox.Mount{Host: rs.ws.Project(p.Name), Inside: "/hive/projects/" + p.Name, Hide: true})
+		}
+		for _, d := range []string{"checks", "gates", "risk"} {
+			os.MkdirAll(filepath.Join(rs.ws.Hive(), d, p.Name), 0o755)
+			rel = append(rel, d+"/"+p.Name)
+		}
+		rel = append(rel, "kb/isolated/"+p.Name, "scores/"+p.Name+".jsonl", "chats/project_"+p.Name+".jsonl")
+	}
+	if len(iso) > 0 { // the kb's record is filed from the journal, so it is covered whole too
+		rec := filepath.Join(rs.ws.KB(), "record")
+		os.MkdirAll(rec, 0o755)
+		out = append(out, sandbox.Mount{Host: rec, Inside: "/hive/kb/record", Hide: true})
+		if !r.Isolated {
+			rel = append(rel, "kb/record")
+		}
+	}
+	if len(iso) == 0 || r.Isolated {
+		return out
+	}
+	rel = append(rel, "events.jsonl")
+	rs.mu.Lock()
+	for id, x := range rs.runs {
+		if iso[x.Project] {
+			rel = append(rel, "runs/"+id, "chats/agent_"+id+".jsonl", "scratch/"+id)
+		}
+	}
+	rs.mu.Unlock()
+	for _, f := range rel {
+		host := filepath.Join(rs.ws.Hive(), filepath.FromSlash(f))
+		if Exists(host) {
+			out = append(out, sandbox.Mount{Host: host, Inside: "/hive/state/" + f, Hide: true})
+		}
+	}
+	return out
+}
+
 // freshCodexHome makes the turn's CODEX_HOME: a new folder on the host side
 // the agent never had, so nothing it planted can steer the host's writes.
 // Only the sessions from earlier turns, which resume needs, move into it.
 // The Hive's instructions go in its config.toml rather than on the command
 // line, which has a size cap.
 func (rs *Runs) freshCodexHome(r Run) (string, error) {
-	rs.dropCodexHome(r.ID)
+	if err := rs.dropCodexHome(r.ID); err != nil {
+		return "", err
+	}
 	dir := filepath.Join(rs.ws.RunHost(r.ID), "codex")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return "", err
@@ -916,16 +1079,25 @@ func (rs *Runs) freshCodexHome(r Run) (string, error) {
 	if r.System == "" {
 		return dir, nil
 	}
-	s, _ := json.Marshal(r.System) // a JSON string is a valid TOML basic string
+	// A JSON string is a valid TOML basic string once DEL, which JSON leaves raw, is escaped.
+	s, _ := json.Marshal(r.System)
+	s = bytes.ReplaceAll(s, []byte("\x7f"), []byte(`\u007f`))
 	return dir, os.WriteFile(filepath.Join(dir, "config.toml"), []byte("developer_instructions = "+string(s)+"\n"), 0o600)
 }
 
 // dropCodexHome deletes the turn's CODEX_HOME, and with it the access token,
-// keeping only its sessions for the next turn's resume.
-func (rs *Runs) dropCodexHome(id string) {
+// keeping only its sessions for the next turn's resume. Folders the agent
+// locked are opened first; links are never followed.
+func (rs *Runs) dropCodexHome(id string) error {
 	dir := filepath.Join(rs.ws.RunHost(id), "codex")
 	os.Rename(filepath.Join(dir, "sessions"), filepath.Join(rs.ws.RunHost(id), "codex-sessions"))
-	os.RemoveAll(dir)
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			os.Chmod(p, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
 }
 
 // Clip shortens s to n runes on one line.

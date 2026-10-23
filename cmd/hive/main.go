@@ -19,6 +19,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/daemon"
 	"github.com/ihsan-sa/hive-standalone-build/internal/fakeagent"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/kb"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/report"
 	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 	"github.com/ihsan-sa/hive-standalone-build/internal/setup"
@@ -31,7 +32,10 @@ const usage = `hive: a small team of AI agents working on your projects.
   hive ask "..."           ask the lead [--project name] [--wait]
   hive status              what the Hive is doing
   hive improve             run an improvement sweep now
+  hive kb [words]          search the knowledge base: notes and everything the Hive did [--limit n|all]
   hive answer <id> <opt>   answer something waiting on you
+  hive approve <id> [note] say yes to it (its first option)
+  hive refuse <id> [note]  say no to it (its last option)
   hive login               log in to Claude Code and GitHub with their own logins
   hive login add <name>    add another Claude login to spread runs over; add "codex" for Codex
   hive doctor [--bare]     check the install; --bare opts into unsandboxed agents
@@ -98,6 +102,19 @@ func run(args []string) int {
 		return cmdAsk(args)
 	case "status":
 		return cmdStatus()
+	case "kb":
+		ws, err := workspace()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, core.Cmd+":", err)
+			return 1
+		}
+		query, limit := kbArgs(args)
+		if query == "" {
+			fmt.Println("The knowledge base is the folder " + ws.KB() + "; its record/ has a file per task, request, run, chat and project.")
+			return 0
+		}
+		fmt.Println(kb.Find(ws.KB(), query, limit))
+		return 0
 	case "improve":
 		return withClient(func(c *api.Client) error {
 			var s map[string]any
@@ -115,6 +132,28 @@ func run(args []string) int {
 		return withClient(func(c *api.Client) error {
 			note := strings.Join(args[2:], " ")
 			return c.Do("POST", "/api/answer", map[string]string{"id": args[0], "answer": args[1], "note": note}, nil)
+		})
+	case "approve", "refuse":
+		if len(args) < 1 {
+			fmt.Fprintf(os.Stderr, "usage: hive %s <id> [note]\n", cmd)
+			return 2
+		}
+		return withClient(func(c *api.Client) error {
+			st, err := c.State()
+			if err != nil {
+				return err
+			}
+			for _, a := range st.Asks {
+				if a.ID == args[0] {
+					opt := a.Options[0]
+					if cmd == "refuse" {
+						opt = a.Options[len(a.Options)-1]
+					}
+					fmt.Println(cmd+"d:", a.Title, "->", opt)
+					return c.Do("POST", "/api/answer", map[string]string{"id": a.ID, "answer": opt, "note": strings.Join(args[1:], " ")}, nil)
+				}
+			}
+			return fmt.Errorf("nothing waiting on you has id %s (%s status lists them)", args[0], core.Cmd)
 		})
 	case "login":
 		if len(args) > 0 && args[0] == "add" {
@@ -366,7 +405,12 @@ func cmdDoctor(args []string) int {
 	}
 	fmt.Printf("✓ workspace %s\n", ws.Root)
 	c := &core.Core{WS: ws}
-	if cfg := ws.LoadConfig(); cfg.Sandbox == "bare" && cfg.BareAccepted != "" {
+	cfg, err := ws.ReadConfig()
+	if err != nil {
+		ok = false
+		fmt.Printf("✗ settings: %v\n", err)
+	}
+	if cfg.Sandbox == "bare" && cfg.BareAccepted != "" {
 		fmt.Printf("! agents run WITHOUT a sandbox (opted in %s); set \"sandbox\": \"auto\" in Settings to go back\n", cfg.BareAccepted)
 	}
 	if msg, err := setup.SandboxReport(ws, c.HiveLinux()); err != nil {
@@ -419,4 +463,19 @@ func cmdUninstall() int {
 func pretty(v any) string {
 	raw, _ := json.MarshalIndent(v, "", "  ")
 	return string(raw)
+}
+
+// kbArgs splits `hive kb` arguments into the search words and a --limit
+// value, which may come before, between or after the words.
+func kbArgs(args []string) (query, limit string) {
+	var words []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--limit" && i+1 < len(args) {
+			limit = args[i+1]
+			i++
+			continue
+		}
+		words = append(words, args[i])
+	}
+	return strings.Join(words, " "), limit
 }

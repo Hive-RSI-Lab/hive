@@ -47,12 +47,14 @@ type State struct {
 	StepBacks  []improve.StepBack `json:"stepbacks"`
 	Asks       []core.Ask         `json:"asks"`
 	Alerts     []Alert            `json:"alerts"`
+	Updated    *Updated           `json:"updated,omitempty"`
 	Jobs       []system.JobState  `json:"jobs"`
 	Wakeups    []system.Wakeup    `json:"wakeups"`
 	Modules    []ModuleView       `json:"modules"`
 	Chats      []ChatView         `json:"chats"`
 	Requests   []risk.Request     `json:"requests"`
 	Config     core.Config        `json:"config"`
+	ConfigErr  string             `json:"config_err,omitempty"`
 }
 
 // ProjectView is one project on the dashboard.
@@ -62,6 +64,13 @@ type ProjectView struct {
 	Tasks  []work.Task           `json:"tasks"`
 	Scores []improve.Measurement `json:"scores"`
 	Best   *float64              `json:"best,omitempty"`
+}
+
+// Updated is the update that brought in this version, with its release notes.
+type Updated struct {
+	Seq   int64  `json:"seq"`
+	To    string `json:"to"`
+	Notes string `json:"notes"`
 }
 
 // Alert is a ledger alert.
@@ -79,6 +88,8 @@ type ModuleView struct {
 	Source      string   `json:"source"`
 	Release     string   `json:"release"`
 	Projects    []string `json:"projects"`
+	Hooks       []string `json:"hooks,omitempty"`
+	Status      string   `json:"status,omitempty"` // a module with a program: running, or why not
 }
 
 // ChatView is one chat in the list.
@@ -215,4 +226,10 @@ func (c *Client) Ping() bool {
 func (c *Client) State() (State, error) {
 	var s State
 	return s, c.Do("GET", "/api/state", nil, &s)
+}
+
+// ConfigView is GET /api/config: every setting that read, and what config.json got wrong.
+type ConfigView struct {
+	core.Config
+	LoadError string `json:"load_error,omitempty"`
 }

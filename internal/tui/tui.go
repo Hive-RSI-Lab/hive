@@ -78,7 +78,9 @@ type model struct {
 	msgs      map[string][]chat.Message
 	input     textinput.Model
 	composing bool
-	reply     string // thread being replied to; "" = new thread
+	files     []chat.File // attached to the message being written
+	composeN  int         // counts composes, so a clipboard read can't land in a later one
+	reply     string      // thread being replied to; "" = new thread
 
 	// dashboard and lists
 	dashSel int
@@ -93,6 +95,8 @@ type model struct {
 
 	since     []string
 	showSince bool
+	seen      int64 // the journal seq the person has seen up to, for the update notice
+	notice    *api.Updated
 	help      bool
 }
 
@@ -118,6 +122,11 @@ func Run(c *api.Client, ws core.Workspace) error {
 	in.CharLimit = 8000
 	m := &model{scroll: -1, c: c, ws: ws, open: map[string]bool{}, closed: map[string]bool{}, msgs: map[string][]chat.Message{},
 		runs: map[string]api.RunDetail{}, tasks: map[string]work.Task{}, input: in}
+	var ui struct{ Seq int64 }
+	if raw, err := os.ReadFile(m.uiPath()); err == nil {
+		json.Unmarshal(raw, &ui)
+	}
+	m.seen = ui.Seq
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
@@ -259,6 +268,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = "the Hive isn't answering: " + msg.err.Error()
 		} else {
 			m.err, m.st, m.loaded = "", msg.st, true
+			if u := msg.st.Updated; u != nil && u.Seq > m.seen {
+				m.notice, m.seen = u, u.Seq
+			}
 		}
 	case chatMsg:
 		m.msgs[msg.id] = msg.msgs
@@ -272,14 +284,33 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case flashMsg:
 		m.setFlash(string(msg))
 		return m, m.fetchState()
+	case clipMsg:
+		switch {
+		case msg.text != nil:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg.text)
+			return m, cmd
+		case msg.compose != m.composeN || !m.composing:
+			// read for a message that has since been sent or dropped
+		case msg.err != nil:
+			m.setFlash(msg.err.Error())
+		case m.composing:
+			m.files = append(m.files, msg.f)
+		}
 	case tea.KeyMsg:
 		return m.key(msg)
 	case tea.MouseMsg:
 		d := map[tea.MouseButton]int{tea.MouseButtonWheelUp: -3, tea.MouseButtonWheelDown: 3}[msg.Button]
 		switch {
-		case d == 0 || msg.Action != tea.MouseActionPress || m.help || m.showSince:
+		case d == 0 || msg.Action != tea.MouseActionPress || m.help || m.showSince || m.notice != nil:
 		case len(m.stack) > 0:
-			if top := &m.stack[len(m.stack)-1]; top.kind != "module" {
+			if top := &m.stack[len(m.stack)-1]; top.kind == "module" { // the list follows the selection
+				key := "up"
+				if d > 0 {
+					key = "down"
+				}
+				return m.keyDetailAction(top, key)
+			} else {
 				top.scroll = max(0, top.scroll+d)
 			}
 		case m.section == secChats:
@@ -297,6 +328,10 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.showSince {
 		m.showSince = false
+		return m, nil
+	}
+	if m.notice != nil {
+		m.notice = nil
 		return m, nil
 	}
 	if m.help {
@@ -373,9 +408,15 @@ func (m *model) keyDetail(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "esc":
-		m.composing, m.editing = false, false
+		m.composing, m.editing, m.files = false, false, nil
 		m.input.Blur()
 		return m, nil
+	case "ctrl+v", "alt+v":
+		// As in Claude Code: an image on the clipboard attaches; otherwise
+		// ctrl+v pastes text as before.
+		if m.composing {
+			return m, readClipboard(true, m.composeN)
+		}
 	case "enter":
 		text := strings.TrimSpace(m.input.Value())
 		m.input.SetValue("")
@@ -385,22 +426,72 @@ func (m *model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.saveSetting(text)
 		}
 		m.composing = false
-		if text == "" {
+		files := m.files
+		m.files = nil
+		if text == "" && len(files) == 0 {
 			return m, nil
 		}
 		id := m.currentChatID()
 		reply := m.reply
 		return m, func() tea.Msg {
 			var msg chat.Message
-			if err := m.c.Do("POST", "/api/chat", map[string]string{"chat": id, "thread": reply, "text": text}, &msg); err != nil {
+			if err := m.c.Do("POST", "/api/chat", map[string]any{"chat": id, "thread": reply, "text": text, "files": files}, &msg); err != nil {
 				return flashMsg("error: " + err.Error())
 			}
 			return flashMsg("sent")
 		}
 	}
+	if m.composing && k.Paste {
+		// A drop arrives as a pasted path; an empty paste may be an image.
+		if len(k.Runes) == 0 {
+			return m, readClipboard(false, m.composeN)
+		}
+		if paths := pastedPaths(string(k.Runes)); paths != nil {
+			maxMB := m.st.Config.ChatMaxMB
+			if maxMB <= 0 { // no state yet
+				maxMB = core.DefaultConfig().ChatMaxMB
+			}
+			var have int64
+			for _, f := range m.files {
+				have += int64(len(f.Data))
+			}
+			for _, p := range paths {
+				f, err := readAttachment(p, have, maxMB)
+				if err != nil {
+					return m, flash("error: " + err.Error())
+				}
+				m.files = append(m.files, f)
+				have += int64(len(f.Data))
+			}
+			return m, nil
+		}
+	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
 	return m, cmd
+}
+
+func flash(s string) tea.Cmd { return func() tea.Msg { return flashMsg(s) } }
+
+// clipMsg is a clipboard read: an image to attach, why there is none, or,
+// for ctrl+v with no image, the input's own text paste.
+type clipMsg struct {
+	f       chat.File
+	err     error
+	text    tea.Msg
+	compose int // the compose it was read for
+}
+
+// readClipboard reads the clipboard's image off the UI loop, since a tool
+// like powershell.exe can take seconds.
+func readClipboard(text bool, compose int) tea.Cmd {
+	return func() tea.Msg {
+		f, err := clipboardImage()
+		if text && (err == errNoImage || err == errNoTool) {
+			return clipMsg{text: textinput.Paste(), compose: compose}
+		}
+		return clipMsg{f: f, err: err, compose: compose}
+	}
 }
 
 func (m *model) bodyHeight() int { return max(3, m.h-4) }
@@ -445,6 +536,8 @@ func (m *model) View() string {
 	case m.showSince:
 		body = append([]string{"", stTitle.Render("  While you were away"), ""}, indent(m.since, "  ")...)
 		body = append(body, "", stDim.Render("  any key to continue"))
+	case m.notice != nil:
+		body = append([]string{"", stTitle.Render("  Updated to "+m.notice.To) + stDim.Render("  any key to dismiss"), ""}, indent(strings.Split(m.notice.Notes, "\n"), "  ")...)
 	case m.help:
 		body = helpLines()
 	case len(m.stack) > 0:
@@ -482,10 +575,13 @@ func (m *model) View() string {
 
 func (m *model) footer() string {
 	if m.composing || m.editing {
+		if m.composing {
+			return "enter send · esc cancel · drop a file or ctrl+v an image to attach"
+		}
 		return "enter send · esc cancel"
 	}
 	if len(m.stack) > 0 && m.stack[len(m.stack)-1].kind == "module" {
-		return "↑↓ project · space grant or remove · esc back · q quit"
+		return "↑↓ project · space grant or remove · r review again · esc back · q quit"
 	}
 	if len(m.stack) > 0 {
 		return "↑↓ scroll · esc back · tab section · q quit (the Hive keeps running)"

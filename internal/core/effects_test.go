@@ -26,6 +26,7 @@ func testHive(t *testing.T) (*Core, *Local) {
 	}
 	cfg := ws.LoadConfig()
 	cfg.Sandbox, cfg.BareAccepted, cfg.Harness = "bare", time.Now().Format(time.RFC3339), "fake"
+	cfg.MemFloorMB, cfg.MemPressureMax, cfg.CPUPressureMax = 0, 0, 0 // a loaded CI runner mustn't hold fake turns
 	ws.SaveConfig(cfg)
 	forge := &Local{Dir: filepath.Join(dir, "forge")}
 	c, err := Open(ws, forge)
@@ -88,6 +89,7 @@ func commitInCheckout(t *testing.T, c *Core, p Project, id, base, file, content 
 	if err != nil {
 		t.Fatal(err)
 	}
+	os.MkdirAll(filepath.Dir(filepath.Join(dir, file)), 0o755)
 	os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644)
 	mustGit(t, dir, "add", "-A")
 	mustGit(t, dir, "commit", "-q", "-m", "work")
@@ -232,6 +234,29 @@ func TestClassify(t *testing.T) {
 	var np *NeedsPerson
 	if _, err := c.Effects.Merge(MergeRequest{Project: p, SHA: sha2, Main: main}); !errors.As(err, &np) {
 		t.Fatalf("goals change merged without the person: %v", err)
+	}
+}
+
+// A docs/ path is no free pass: a script there is code and gets a review,
+// while an image there is still a doc.
+func TestClassifyDocsByType(t *testing.T) {
+	for _, tc := range []struct {
+		file  string
+		small bool
+	}{
+		{"docs/build.sh", false},
+		{"docs/gen.py", false},
+		{"docs/Makefile", false},
+		{"docs/img/flow.png", true},
+		{"docs/guide.md", true},
+	} {
+		c, _, p, main := setupProject(t)
+		r, _ := commitInCheckout(t, c, p, "w6", main, tc.file, "x\n")
+		sha, _ := c.Effects.Extract(p, r, main)
+		ch, err := c.Effects.Classify(p, main, sha)
+		if err != nil || ch.Small != tc.small {
+			t.Errorf("%s: small=%v, want %v (%v)", tc.file, ch.Small, tc.small, err)
+		}
 	}
 }
 

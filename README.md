@@ -35,7 +35,7 @@ The score command's output ends with one number; `direction` says whether higher
 
 ## Models
 
-The model workers and leads use and the reviewer's model are under **Settings** in the control center. They're stored in `.hive/config.json` in your Hive folder (`model` and `reviewer_model`), and `projects.<name>.model` overrides the model for one project.
+The model workers use, the lead's and the reviewer's are under **Settings** in the control center. They're stored in `.hive/config.json` in your Hive folder (`model`, `lead_model` and `reviewer_model`), and `projects.<name>.model` overrides the model for one project.
 
 ## Use
 
@@ -49,11 +49,13 @@ The model workers and leads use and the reviewer's model are under **Settings** 
 
 The Hive keeps running in the background and starts with the machine. Closing the control center never stops work.
 
+In a chat, drop a file or paste one's path to attach it, and ctrl+v attaches an image on the clipboard. One message, files and all, can be up to 300 MB; `chat_max_mb` in `.hive/config.json` changes that.
+
 ## What's safe and what isn't
 
 - Agents hold no logins; they get a short-lived token per turn.
 - Agents write only their checkout and a scratch home; network is outbound only, never to this machine or your LAN.
-- Main changes only through the gate. Goals, the score and project settings are yours to merge.
+- Main changes only through the gate. Goals, the score and project settings merge on a warden's read, and you're told after; at autonomy 1 they're yours to merge.
 - When an agent needs something beyond its sandbox, like installing a package, the Hive can run it for them. At the default autonomy (2) a warden agent weighs the step and can run it on your machine, outside any sandbox, as your user (and as root wherever sudo doesn't ask for a password). Those scripts use the host's paths. A step that's hard to undo goes to a panel of three agents that votes first. At autonomy 1 the step comes to you in **Waiting** before any warden sees it.
 - Spending money, credentials, opening the machine to the network and anything sent in your name come to you, whatever a warden or panel says. The Hive spots these by reading the step's words, so it errs toward asking you, but a step that hides what it does can slip past.
 

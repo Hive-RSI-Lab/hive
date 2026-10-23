@@ -11,9 +11,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 )
+
+// releases is the API's list of me/hive's releases; "" answers 404.
+var releases string
 
 // serve is a release site with tag as the latest release of me/hive, holding
 // each asset with a checksums.txt over them (lie corrupts the sums). The repo's
@@ -35,6 +39,8 @@ func serve(t *testing.T, tag string, assets map[string]string, lie bool) {
 		case p == "/me/hive/releases/latest":
 			http.Redirect(w, r, "/me/hive/releases/tag/"+tag, http.StatusFound)
 		case p == "/me/hive/releases/tag/"+tag:
+		case p == "/repos/me/hive/releases" && releases != "":
+			w.Write([]byte(releases))
 		case p == "/me/hive/releases/download/"+tag+"/checksums.txt":
 			w.Write([]byte(sums))
 		case strings.HasPrefix(p, "/me/hive/releases/download/"+tag+"/") && assets[filepath.Base(p)] != "":
@@ -44,9 +50,9 @@ func serve(t *testing.T, tag string, assets map[string]string, lie bool) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	site := Site
-	t.Cleanup(func() { Site = site })
-	Site = srv.URL
+	site, api, rels := Site, API, releases
+	t.Cleanup(func() { Site, API, releases = site, api, rels })
+	Site, API = srv.URL, srv.URL
 }
 
 // releaseAt is the release module in a build stamped version, following repo,
@@ -91,12 +97,61 @@ func TestUpdateThroughRenamedRepo(t *testing.T) {
 	serve(t, "v9.9.9", newBuild(), false)
 	m, exe := releaseAt(t, "v0.1.2", "old/name")
 	msg, err := m.Update()
-	if raw, _ := os.ReadFile(exe); err != nil || msg != "updated to v9.9.9" || string(raw) != "new" {
+	if raw, _ := os.ReadFile(exe); err != nil || !strings.HasPrefix(msg, "updated to v9.9.9\n") || string(raw) != "new" {
 		t.Fatalf("update: %q, %v, binary %q", msg, err, raw)
 	}
 	core.Version = "v9.9.9"
 	if msg, err := m.Update(); err != nil || msg != "already on v9.9.9" {
 		t.Fatalf("second update: %q, %v", msg, err)
+	}
+}
+
+const releaseList = `[
+ {"tag_name": "v9.9.9", "body": "Faster merges.", "html_url": "https://example.com/me/hive/releases/tag/v9.9.9"},
+ {"tag_name": "v9.9.8", "body": "Fixed the lead's chat.", "html_url": "https://example.com/me/hive/releases/tag/v9.9.8"},
+ {"tag_name": "v0.1.2", "body": "Already installed.", "html_url": "https://example.com/me/hive/releases/tag/v0.1.2"}
+]`
+
+// hive update names the new version's notes and its page, and journals them
+// for the control center.
+func TestUpdateShowsNotes(t *testing.T) {
+	serve(t, "v9.9.9", newBuild(), false)
+	releases = releaseList
+	m, _ := releaseAt(t, "v9.9.8", "me/hive")
+	msg, err := m.Update()
+	if err != nil || !strings.Contains(msg, "Faster merges.") || !strings.Contains(msg, "releases/tag/v9.9.9") || strings.Contains(msg, "lead's chat") {
+		t.Fatalf("update: %q, %v", msg, err)
+	}
+	var got struct{ Notes string }
+	m.C.J.Replay(func(e core.Event) {
+		if e.Kind == "hive.updated" {
+			e.Decode(&got)
+		}
+	})
+	if !strings.Contains(got.Notes, "Faster merges.") {
+		t.Fatalf("journaled notes: %q", got.Notes)
+	}
+}
+
+// An update that skips versions shows each skipped version's notes too.
+func TestUpdateShowsSkippedNotes(t *testing.T) {
+	serve(t, "v9.9.9", newBuild(), false)
+	releases = releaseList
+	m, _ := releaseAt(t, "v0.1.2", "me/hive")
+	msg, err := m.Update()
+	if err != nil || !strings.Contains(msg, "Faster merges.") || !strings.Contains(msg, "Fixed the lead's chat.") || strings.Contains(msg, "Already installed.") {
+		t.Fatalf("update: %q, %v", msg, err)
+	}
+}
+
+// Notes that can't be fetched still update, and link the releases page.
+func TestUpdateWithoutNotesLinksThem(t *testing.T) {
+	serve(t, "v9.9.9", newBuild(), false)
+	releases = ""
+	m, exe := releaseAt(t, "v0.1.2", "me/hive")
+	msg, err := m.Update()
+	if raw, _ := os.ReadFile(exe); err != nil || string(raw) != "new" || !strings.HasSuffix(msg, Site+"/me/hive/releases") {
+		t.Fatalf("update: %q, %v, binary %q", msg, err, raw)
 	}
 }
 
@@ -120,7 +175,7 @@ func TestAutoUpdateWaitsOutAMerge(t *testing.T) {
 		t.Fatalf("updated mid-merge: %q", msg)
 	}
 	merging = false
-	if msg, err := m.AutoUpdate(); err != nil || msg != "updated to v9.9.9" {
+	if msg, err := m.AutoUpdate(); err != nil || !strings.HasPrefix(msg, "updated to v9.9.9\n") {
 		t.Fatalf("after the merge: %q, %v", msg, err)
 	}
 	if raw, _ := os.ReadFile(exe); string(raw) != "new" {
@@ -248,6 +303,48 @@ func TestStaleReleaseAnswer(t *testing.T) {
 	if len(n.got) != 1 {
 		t.Fatalf("a stale answer cut another release: %v", n.got)
 	}
+	if m.C.Effects.Approved("release", "hive", "m2") {
+		t.Fatal("a stale answer left an approval for m2")
+	}
+	if !journaled(m, "release.superseded") {
+		t.Fatal("the stale answer was not recorded as superseded")
+	}
+}
+
+func journaled(m *Module, kind string) (found bool) {
+	m.C.J.Replay(func(e core.Event) { found = found || e.Kind == kind })
+	return
+}
+
+// The Hive's own supersede is marked as the Hive's, not the person's word.
+func TestSupersedeIsTheHives(t *testing.T) {
+	m, _, merged, land := selfHive(t)
+	merged(2, "a2", "m2", "install/root.sh")
+	land("a2", "r2")
+	m.AfterKept("hive", "m2")
+	old := m.C.Person.Open()[0]
+	merged(3, "a3", "m3", "install/root.sh")
+	land("a3", "r3")
+	m.AfterKept("hive", "m3")
+	got, _ := m.C.Person.Get(old.ID)
+	if got.Answer != "superseded" || !strings.HasPrefix(got.Note, "the Hive") {
+		t.Fatalf("the supersede should say it is the Hive's: %+v", got)
+	}
+}
+
+// A sha no journaled merge made covers nothing: no release, no approval.
+func TestUnknownMergeRefused(t *testing.T) {
+	m, n, merged, land := selfHive(t)
+	merged(1, "a1", "m1")
+	land("a1", "r1")
+	m.AfterKept("hive", "outside")
+	if len(n.got) != 0 {
+		t.Fatalf("released a merge the Hive never made: %v", n.got)
+	}
+	m.OnPerson(core.Ask{Kind: "release", Ref: "hive@outside", Project: "hive", Answer: "release"})
+	if m.C.Effects.Approved("release", "hive", "outside") {
+		t.Fatal("approved a release of an unknown merge")
+	}
 }
 
 // The person's release answer stands for the unread head its ask named.
@@ -308,5 +405,29 @@ func TestConcurrentKeepsCutOneRelease(t *testing.T) {
 	wg.Wait()
 	if n.calls != 1 {
 		t.Fatalf("%d releases cut for one merge", n.calls)
+	}
+}
+
+// A late answer for m2 that arrives while a release at m3 is being cut waits
+// for it, then finds m2 covered: no approval is left behind for m2.
+func TestLateAnswerWaitsForTheRelease(t *testing.T) {
+	m, n, merged, land := selfHive(t)
+	merged(2, "a2", "m2", "install/root.sh")
+	merged(3, "a3", "m3", "install/root.sh")
+	land("a2", "r2")
+	land("a3", "r3")
+	m.C.Effects.Approve("release", "hive", "m3")
+	unlock := m.lock("hive")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.OnPerson(core.Ask{Kind: "release", Ref: "hive@m2", Project: "hive", Answer: "release"})
+	}()
+	time.Sleep(20 * time.Millisecond) // the answer reaches the lock first
+	m.afterKept("hive", "m3")
+	unlock()
+	<-done
+	if n.calls != 1 || m.C.Effects.Approved("release", "hive", "m2") || !journaled(m, "release.superseded") {
+		t.Fatalf("the late answer should be superseded: %d releases, m2 approved %v", n.calls, m.C.Effects.Approved("release", "hive", "m2"))
 	}
 }

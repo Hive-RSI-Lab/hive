@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +30,7 @@ type Module struct {
 	C *core.Core
 	// Restart is called after a new binary is in place (the daemon re-execs).
 	Restart func()
-	locks   sync.Map // project -> *sync.Mutex held while AfterKept runs
+	locks   sync.Map // project -> *sync.Mutex held while a release is decided
 	// Busy reports work mid-merge, which an automatic update waits out.
 	Busy func() bool
 }
@@ -37,6 +38,9 @@ type Module struct {
 // Site serves the releases: GitHub over plain HTTPS, so updating needs no
 // login and follows the redirect from a renamed repo. Tests point it elsewhere.
 var Site = "https://github.com"
+
+// API serves each release's notes. Tests point it elsewhere.
+var API = "https://api.github.com"
 
 // executable is the binary an update replaces, through any hive-v0 link.
 var executable = setup.Executable
@@ -80,6 +84,38 @@ func download(repo, tag, name, dir string) error {
 	_, err = io.Copy(f, resp.Body)
 	return err
 }
+
+// Notes are the release notes of each version after from up to to, newest
+// first, each with its page; when they can't be fetched, the releases page.
+func Notes(repo, from, to string) string {
+	var rels []struct {
+		Tag  string `json:"tag_name"`
+		Body string
+		URL  string `json:"html_url"`
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(API + "/repos/" + repo + "/releases?per_page=100")
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			err = errors.New(resp.Status)
+		} else {
+			err = json.NewDecoder(resp.Body).Decode(&rels)
+		}
+	}
+	var b strings.Builder
+	for _, r := range rels {
+		if modules.Newer(from, r.Tag) && !modules.Newer(to, r.Tag) {
+			fmt.Fprintf(&b, "%s: %s\n%s\n\n", r.Tag, r.URL, strings.TrimSpace(r.Body))
+		}
+	}
+	if err != nil || b.Len() == 0 {
+		return NotesLink(repo)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// NotesLink points at the releases page.
+func NotesLink(repo string) string { return "What changed: " + Site + "/" + repo + "/releases" }
 
 // AssetName is the release asset for an OS and architecture.
 func AssetName(goos, goarch string) string {
@@ -151,11 +187,12 @@ func (m *Module) Update() (string, error) {
 			return "", err
 		}
 	}
-	m.C.J.MustAppend("hive.updated", map[string]string{"from": core.Version, "to": tag})
+	notes := Notes(cfg.ReleaseRepo, core.Version, tag)
+	m.C.J.MustAppend("hive.updated", map[string]string{"from": core.Version, "to": tag, "notes": notes})
 	if m.Restart != nil {
 		go func() { time.Sleep(time.Second); m.Restart() }()
 	}
-	return "updated to " + tag, nil
+	return "updated to " + tag + "\n\n" + notes, nil
 }
 
 // AutoUpdate is the scheduled job: update when allowed and nothing is mid-merge.
@@ -268,20 +305,29 @@ func fileSum(path string) (string, error) {
 // merged since the last one and the reviewer runs that read its exact head. A
 // head with no read, or a change to a root path, waits for the person's word.
 func (m *Module) AfterKept(project, sha string) {
+	defer m.lock(project)()
+	m.afterKept(project, sha)
+}
+
+// lock holds the project's release lock until the returned func runs, so two
+// callers never race for the same tag or approve a release another covered.
+func (m *Module) lock(project string) func() {
+	l, _ := m.locks.LoadOrStore(project, &sync.Mutex{})
+	l.(*sync.Mutex).Lock()
+	return l.(*sync.Mutex).Unlock
+}
+
+func (m *Module) afterKept(project, sha string) {
 	p, ok := m.C.Projects.Get(project)
 	if !ok || !p.Self {
 		return
 	}
-	// One at a time per project, so two callers never race for the same tag.
-	l, _ := m.locks.LoadOrStore(project, &sync.Mutex{})
-	l.(*sync.Mutex).Lock()
-	defer l.(*sync.Mutex).Unlock()
 	alert := func(text string) {
 		m.C.J.MustAppend("alert.raised", map[string]string{"kind": "release", "project": project, "text": text})
 	}
-	list, stale := m.merges(project, sha)
-	if stale {
-		alert("no release at " + core.Short(sha) + ": a newer release already covers it")
+	list, refuse := m.merges(project, sha)
+	if refuse != "" {
+		alert("no release at " + core.Short(sha) + ": " + refuse)
 		return
 	}
 	var manifest strings.Builder
@@ -330,7 +376,7 @@ func (m *Module) hold(project, sha string, root, unread []string, manifest strin
 	ref := project + "@" + sha
 	for _, a := range m.C.Person.Open() {
 		if a.Kind == "release" && a.Project == project && a.Ref != ref {
-			m.C.Person.Answer(a.ID, "superseded", "a release ask at "+core.Short(sha)+" covers it")
+			m.C.Person.Answer(a.ID, "superseded", "the Hive, not the person: a release ask at "+core.Short(sha)+" covers it")
 		}
 	}
 	var why []string
@@ -350,8 +396,13 @@ func (m *Module) hold(project, sha string, root, unread []string, manifest strin
 func (m *Module) OnPerson(a core.Ask) {
 	project, sha, _ := strings.Cut(a.Ref, "@")
 	if a.Answer == "release" || a.Answer == "yes" {
+		defer m.lock(project)()
+		if _, refuse := m.merges(project, sha); refuse != "" {
+			m.C.J.MustAppend("release.superseded", map[string]string{"project": project, "sha": sha, "why": refuse})
+			return
+		}
 		m.C.Effects.Approve("release", project, sha)
-		m.AfterKept(project, sha)
+		m.afterKept(project, sha)
 	}
 }
 
@@ -363,8 +414,9 @@ type merge struct {
 }
 
 // merges lists the project's merges after the one its last release was cut
-// at, up to the one that made upTo. stale means a release already covers upTo.
-func (m *Module) merges(project, upTo string) (out []merge, stale bool) {
+// at, up to the one that made upTo. refuse says why there is nothing to
+// release: a release already covers upTo, or upTo is no merge the journal saw.
+func (m *Module) merges(project, upTo string) (out []merge, refuse string) {
 	var all []merge
 	from, at := 0, -1
 	m.C.J.Replay(func(e core.Event) {
@@ -389,12 +441,12 @@ func (m *Module) merges(project, upTo string) (out []merge, stale bool) {
 		from = max(from, i+1)
 	})
 	if at >= 0 && at < from {
-		return nil, true
+		return nil, "a newer release already covers it"
 	}
 	if at < 0 {
-		at = len(all) - 1
+		return nil, "it is not a merge the Hive made"
 	}
-	return all[from : at+1], false
+	return all[from : at+1], ""
 }
 
 func bump(tag string) string {
