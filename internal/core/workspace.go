@@ -49,6 +49,8 @@ type Config struct {
 	LeadModel      string         `json:"lead_model"`
 	ReviewerModel  string         `json:"reviewer_model"`
 	TribunalModels []TribunalSeat `json:"tribunal_models"`
+	// ModelChoices adds models to the harness's known list in Settings' pick-lists.
+	ModelChoices []string `json:"model_choices,omitempty"`
 	// Egress holds runs to the hosts listed; with no list a run reaches every
 	// public host.
 	Egress Egress `json:"egress"`
@@ -174,7 +176,7 @@ func DefaultConfig() Config {
 	return Config{
 		Autonomy:       2,
 		Harness:        "claude",
-		Model:          "sonnet",
+		Model:          "opus",
 		LeadModel:      "opus",
 		ReviewerModel:  "opus",
 		TribunalModels: []TribunalSeat{{Model: "opus"}, {Model: "sonnet"}, {Model: "fable"}},
@@ -220,11 +222,11 @@ func (w Workspace) ReadConfig() (Config, error) {
 	if err == nil {
 		err = json.Unmarshal(raw, &c)
 		// A config from before lead_model: a model the person chose stays the
-		// lead's; the old default moves the lead to the new one.
+		// lead's; the old default ("sonnet") moves the lead to opus.
 		var had struct {
 			LeadModel *string `json:"lead_model"`
 		}
-		if json.Unmarshal(raw, &had) == nil && had.LeadModel == nil && c.Model != DefaultConfig().Model {
+		if json.Unmarshal(raw, &had) == nil && had.LeadModel == nil && c.Model != "sonnet" {
 			c.LeadModel = c.Model
 		}
 	} else if os.IsNotExist(err) {

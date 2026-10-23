@@ -88,6 +88,8 @@ type model struct {
 	modSel  int
 	setSel  int
 	editing bool
+	picking bool // a setting's pick-list is open
+	pickSel int
 	optSel  int
 	stack   []detail
 	runs    map[string]api.RunDetail
@@ -340,6 +342,10 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.composing || m.editing {
 		return m.keyInput(k)
+	}
+	if m.picking && (s == "q" || s == "tab" || s == "shift+tab") {
+		m.picking = false // these close an open pick-list first
+		return m, nil
 	}
 	switch s {
 	case "q":
@@ -599,6 +605,9 @@ func (m *model) footer() string {
 	case secModules:
 		return "↑↓ module · enter details · q quit"
 	case secSettings:
+		if m.picking {
+			return "↑↓ choose · enter pick · esc cancel"
+		}
 		return "↑↓ setting · enter change · q quit"
 	}
 	return ""
