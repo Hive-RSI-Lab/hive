@@ -139,8 +139,32 @@ func TestUpdateToAChosenRelease(t *testing.T) {
 	if raw, _ := os.ReadFile(exe); err != nil || !strings.Contains(msg, "updated to v0.1.1, pinned") || string(raw) != "older" {
 		t.Fatalf("older tag: %q, %v, binary %q", msg, err, raw)
 	}
-	if pin := m.C.WS.LoadConfig().ReleasePin; pin != "v0.1.1" {
-		t.Fatalf("pin %q", pin)
+	if cfg := m.C.WS.LoadConfig(); cfg.ReleasePin != "v0.1.1" || cfg.AutoUpdate {
+		t.Fatalf("pin %q, auto_update %v", cfg.ReleasePin, cfg.AutoUpdate)
+	}
+}
+
+// Pinning turns auto_update off, since releases older than the pin read only
+// that, and clearing the pin turns it back on only if it was on before.
+func TestPinPausesAutoUpdate(t *testing.T) {
+	serveAll(t, "v0.1.3", map[string]map[string]string{"v0.1.3": build("new"), "v0.1.1": build("older")}, false)
+	for _, was := range []bool{true, false} {
+		m, _ := releaseAt(t, "v0.1.2", "me/hive")
+		cfg := m.C.WS.LoadConfig()
+		cfg.AutoUpdate = was
+		m.C.WS.SaveConfig(cfg)
+		if msg, err := m.Update("v0.1.1"); err != nil || !strings.Contains(msg, "auto-update off") {
+			t.Fatalf("pin: %q, %v", msg, err)
+		}
+		if cfg := m.C.WS.LoadConfig(); cfg.AutoUpdate {
+			t.Fatalf("auto_update on while pinned (was %v)", was)
+		}
+		if _, err := m.Update(""); err != nil {
+			t.Fatal(err)
+		}
+		if cfg := m.C.WS.LoadConfig(); cfg.ReleasePin != "" || cfg.AutoUpdate != was {
+			t.Fatalf("cleared: pin %q, auto_update %v, want %v", cfg.ReleasePin, cfg.AutoUpdate, was)
+		}
 	}
 }
 
@@ -150,7 +174,7 @@ func TestPinHoldsUntilCleared(t *testing.T) {
 	serveAll(t, "v0.1.3", map[string]map[string]string{"v0.1.3": build("new")}, false)
 	m, exe := releaseAt(t, "v0.1.1", "me/hive")
 	cfg := m.C.WS.LoadConfig()
-	cfg.AutoUpdate, cfg.ReleasePin = true, "v0.1.1"
+	cfg.AutoUpdate, cfg.PinnedAuto, cfg.ReleasePin = false, true, "v0.1.1"
 	m.C.WS.SaveConfig(cfg)
 	for range 2 {
 		msg, err := m.AutoUpdate()
@@ -171,8 +195,8 @@ func TestPinHoldsUntilCleared(t *testing.T) {
 	if raw, _ := os.ReadFile(exe); err != nil || msg != "updated to v0.1.3" || string(raw) != "new" {
 		t.Fatalf("clearing the pin: %q, %v, binary %q", msg, err, raw)
 	}
-	if pin := m.C.WS.LoadConfig().ReleasePin; pin != "" {
-		t.Fatalf("pin %q after update", pin)
+	if cfg := m.C.WS.LoadConfig(); cfg.ReleasePin != "" || !cfg.AutoUpdate {
+		t.Fatalf("pin %q, auto_update %v after update", cfg.ReleasePin, cfg.AutoUpdate)
 	}
 }
 

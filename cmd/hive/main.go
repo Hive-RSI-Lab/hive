@@ -343,7 +343,7 @@ func cmdStatus() int {
 		}
 		fmt.Printf("Hive %s  ·  %s\n", st.Version, st.Workspace)
 		if st.Config.ReleasePin != "" {
-			fmt.Printf("pinned to %s: `%s update` goes back to the newest\n", st.Config.ReleasePin, core.Cmd)
+			fmt.Printf("pinned to %s, auto-update off: `%s update` goes back to the newest\n", st.Config.ReleasePin, core.Cmd)
 		}
 		if st.SandboxErr != "" {
 			fmt.Printf("sandbox: NOT AVAILABLE (%s)\n", core.Clip(st.SandboxErr, 200))

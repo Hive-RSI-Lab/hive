@@ -165,31 +165,38 @@ func (m *Module) Update(tag string) (string, error) {
 		go func() { time.Sleep(time.Second); m.Restart() }()
 	}
 	if pin {
-		return "updated to " + tag + ", pinned there: `" + core.Cmd + " update` goes back to the newest", nil
+		return "updated to " + tag + ", pinned there with auto-update off: `" + core.Cmd + " update` goes back to the newest", nil
 	}
 	return "updated to " + tag, nil
 }
 
 // pin keeps the Hive on tag, or with on false follows the newest release.
+// Pinning turns auto_update off, because releases older than the pin itself
+// read only that and would update straight back to the newest; clearing the
+// pin turns it back on if it was on before.
 func (m *Module) pin(cfg core.Config, tag string, on bool) error {
+	switch {
+	case on && cfg.ReleasePin == "":
+		cfg.PinnedAuto, cfg.AutoUpdate = cfg.AutoUpdate, false
+	case !on && cfg.ReleasePin != "":
+		cfg.AutoUpdate = cfg.AutoUpdate || cfg.PinnedAuto
+		cfg.PinnedAuto = false
+	case !on || cfg.ReleasePin == tag:
+		return nil
+	}
 	if !on {
 		tag = ""
-	}
-	if cfg.ReleasePin == tag {
-		return nil
 	}
 	cfg.ReleasePin = tag
 	return m.C.WS.SaveConfig(cfg)
 }
 
 // AutoUpdate is the scheduled job: update when allowed and nothing is
-// mid-merge. A pinned Hive stays put and says once when a newer release is out.
+// mid-merge. A pinned Hive that was updating itself stays put and says once
+// when a newer release is out.
 func (m *Module) AutoUpdate() (string, error) {
 	cfg := m.C.WS.LoadConfig()
-	if !cfg.AutoUpdate {
-		return "auto-update is off", nil
-	}
-	if cfg.ReleasePin != "" {
+	if cfg.ReleasePin != "" && (cfg.AutoUpdate || cfg.PinnedAuto) {
 		tag, err := latest(cfg.ReleaseRepo)
 		if err != nil || !modules.Newer(cfg.ReleasePin, tag) {
 			return "pinned to " + cfg.ReleasePin, err
@@ -200,6 +207,9 @@ func (m *Module) AutoUpdate() (string, error) {
 			m.C.J.MustAppend("alert.raised", map[string]string{"kind": "release", "ref": "release:pin", "text": text})
 		}
 		return text, nil
+	}
+	if !cfg.AutoUpdate || cfg.ReleasePin != "" {
+		return "auto-update is off", nil
 	}
 	if m.Busy != nil && m.Busy() {
 		return "waiting: work is mid-merge", nil

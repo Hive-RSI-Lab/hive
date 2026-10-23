@@ -690,7 +690,7 @@ func pinText(pin string) string {
 	if pin == "" {
 		return "the newest"
 	}
-	return "pinned to " + pin + " (`" + core.Cmd + " update` goes back to the newest)"
+	return "pinned to " + pin + ", auto-update off (`" + core.Cmd + " update` goes back to the newest)"
 }
 
 func autonomyText(n int) string {
