@@ -1,5 +1,5 @@
 // Package harness is the adapter seam between the core and a coding harness
-// (Claude Code today; Codex is the first to add). A harness turns a Turn into
+// (Claude Code and OpenAI's Codex). A harness turns a Turn into
 // a command line and turns its output stream into Events.
 package harness
 
@@ -22,7 +22,11 @@ type Turn struct {
 	RunDir     string   // the run's inputs; a read-only turn may read them besides its checkout
 	Tools      []string // explicit tool list; nil means the harness default
 	Schema     string   // JSON schema for a structured final answer
+	SchemaFile string   // the same schema as a path the agent process sees
+	ConfigDir  string   // the harness's own config folder the Hive made for this turn, if any
+	Writable   []string // folders besides the checkout the agent may write
 	Sandboxed  bool     // inside a Hive sandbox (permission prompts are meaningless there)
+	MaxOutput  int      // cap on one reply's tokens; 0 is the harness default
 }
 
 // Event is a normalized line of harness output.
@@ -74,6 +78,15 @@ type Harness interface {
 	LoginCommand() []string
 }
 
+// APIHosts are the hosts a harness's own client must reach, added to every
+// run's egress list. A harness lists them with an APIHosts method.
+func APIHosts(h Harness) []string {
+	if a, ok := h.(interface{ APIHosts() []string }); ok {
+		return a.APIHosts()
+	}
+	return nil
+}
+
 // Get returns a harness by name.
 func Get(name string) (Harness, error) {
 	switch name {
@@ -82,7 +95,7 @@ func Get(name string) (Harness, error) {
 	case "fake":
 		return Fake{}, nil
 	case "codex":
-		return nil, fmt.Errorf("harness codex: the adapter seam exists but Codex is not in v1")
+		return Codex{}, nil
 	}
 	return nil, fmt.Errorf("unknown harness %q", name)
 }
@@ -101,6 +114,7 @@ type Claude struct{}
 func (Claude) Name() string           { return "claude" }
 func (Claude) Program() string        { return "claude" }
 func (Claude) LoginCommand() []string { return []string{"claude", "auth", "login"} }
+func (Claude) APIHosts() []string     { return []string{"api.anthropic.com"} }
 
 func (Claude) Args(t Turn) []string {
 	a := []string{"-p", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--setting-sources", "project"}
@@ -134,7 +148,11 @@ func (Claude) Args(t Turn) []string {
 }
 
 func (Claude) Env(t Turn) []string {
-	return []string{"DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"}
+	env := []string{"DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"}
+	if t.MaxOutput > 0 {
+		env = append(env, fmt.Sprintf("CLAUDE_CODE_MAX_OUTPUT_TOKENS=%d", t.MaxOutput))
+	}
+	return env
 }
 
 type claudeLine struct {

@@ -139,12 +139,12 @@ func (m *model) dashRows() []row {
 			if status == "rejected" {
 				status = stBad.Render("limited") + ", resets " + p.Limit.ResetsAt.Local().Format("Mon 15:04")
 			}
-			text := fmt.Sprintf("%s  %s", p.Harness, status)
+			text := fmt.Sprintf("%s  %s", p.Key(), status)
 			for _, k := range sortedKeys(p.Limit.Windows) {
 				wnd := p.Limit.Windows[k]
 				text += fmt.Sprintf("  %s %.0f%%", k, wnd.Utilization*100)
 			}
-			add(row{key: "plan:" + p.Harness, depth: 1, text: text})
+			add(row{key: "plan:" + p.Key(), depth: 1, text: text})
 		}
 	}
 	add(row{key: "waiting", text: fmt.Sprintf("waiting on you (%d)", len(m.st.Asks)), jump: secWaiting})
@@ -712,7 +712,7 @@ func (m *model) settings() []setting {
 		{label: "reviewer model", value: c.ReviewerModel, key: "reviewer_model", choices: models},
 	}
 	for i, t := range c.TribunalModels {
-		s = append(s, setting{label: fmt.Sprintf("tribunal seat %d model", i+1), value: t, key: "tribunal:" + strconv.Itoa(i), choices: models})
+		s = append(s, setting{label: fmt.Sprintf("tribunal seat %d model", i+1), value: t.Model, key: "tribunal:" + strconv.Itoa(i), choices: models})
 	}
 	for _, pv := range m.st.Projects {
 		p := pv.Name
@@ -858,7 +858,7 @@ func (m *model) saveSetting(v string) tea.Cmd {
 	case strings.HasPrefix(key, "tribunal:"):
 		i, _ := strconv.Atoi(strings.TrimPrefix(key, "tribunal:"))
 		c.TribunalModels = slices.Clone(c.TribunalModels)
-		c.TribunalModels[i] = v
+		c.TribunalModels[i].Model = v // a seat keeps its own harness
 	case strings.HasPrefix(key, "project:"):
 		p := strings.TrimPrefix(key, "project:")
 		c.Projects = maps.Clone(c.Projects)

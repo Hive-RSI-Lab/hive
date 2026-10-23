@@ -38,3 +38,6 @@
 
 ## 2026-10-22 The source travels in the binary
 - Decision: `go:embed` of the repository; the KB rewrites `kb/hive/` at each start | Why: the lead could not say how scores or schedules work from prompts alone; reading the source at the running version needs no network | Tradeoff: a bigger binary.
+
+## 2026-10-22 Egress lists, the person's floor, seats that name their harness
+- Decision: `egress.default` and `egress.roles.<role>` hold a run's proxy to listed hosts (plus its harness's API host; no list is every public host, as before), refusals journalled as `run.egress_refused`; `floor` in the config raises any step whose text touches an entry to the person, at routing and at the point of effect; `tribunal_models` entries may be `{harness, model}`, refused at save and at convene when the harness is missing; a vote counts only as one clean structured answer, and seats run isolated | Why: carry the lines an existing warden holds (a host allow list, a rules floor its classifier can't lower, seats across vendors, one-verdict parsing) so moving onto this core doesn't weaken them | Tradeoff: the floor is the same best-effort text match as the ceiling; on macOS each command gets its own proxy port.

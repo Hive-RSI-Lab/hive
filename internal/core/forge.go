@@ -48,7 +48,6 @@ type Forge interface {
 	// Releases (the Hive on itself).
 	LatestRelease(repo string) (Release, error)
 	CreateRelease(repo, tag, sha, notes string) error
-	DownloadAsset(repo, tag, pattern, dir string) error
 }
 
 // Release is a published version.
@@ -302,11 +301,6 @@ func (GitHub) LatestRelease(repo string) (Release, error) {
 
 func (GitHub) CreateRelease(repo, tag, sha, notes string) error {
 	_, err := gh("release", "create", tag, "-R", repo, "--target", sha, "--title", tag, "--notes", notes)
-	return err
-}
-
-func (GitHub) DownloadAsset(repo, tag, pattern, dir string) error {
-	_, err := RunCmd(10*time.Minute, "", "gh", "release", "download", tag, "-R", repo, "--pattern", pattern, "--dir", dir, "--clobber")
 	return err
 }
 
