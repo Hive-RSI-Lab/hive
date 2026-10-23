@@ -65,10 +65,11 @@ func openIn(path string) (*os.File, error) {
 }
 
 // Alive reports whether h still runs (same pid and same start time).
-func Alive(h Handle) bool {
-	if h.PID <= 0 || !running(h.PID) {
-		return false
-	}
+func Alive(h Handle) bool { return h.PID > 0 && running(h.PID) && sameStart(h) }
+
+// sameStart says h.PID is still the process h started; a zombie keeps its
+// start time.
+func sameStart(h Handle) bool {
 	st := StartTime(h.PID)
 	if st.IsZero() || h.Started.IsZero() {
 		return true

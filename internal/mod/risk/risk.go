@@ -157,6 +157,16 @@ func (m *Module) save(r *Request) {
 	m.C.J.MustAppend("risk.saved", r)
 }
 
+// join makes run one of a request's askers, so it hears the answer and the
+// step counts among its Steps. It keeps Updated, which times the warden and
+// dates the verdict, so a join neither stretches one nor freshens the other.
+func (m *Module) join(r *Request, run string) {
+	if r.Origin != run && !slices.Contains(r.Joined, run) {
+		r.Joined = append(r.Joined, run)
+		m.C.J.MustAppend("risk.saved", r)
+	}
+}
+
 // List returns requests, newest first.
 func (m *Module) List() []Request {
 	m.mu.Lock()
@@ -240,14 +250,13 @@ func (m *Module) opRequest(r core.Run, args json.RawMessage) (any, error) {
 			continue
 		}
 		if !strings.Contains("done failed declined", old.State) {
-			if old.Origin != r.ID && !slices.Contains(old.Joined, r.ID) {
-				old.Joined = append(old.Joined, r.ID)
-				m.save(&old)
-			}
+			m.join(&old, r.ID)
 			m.C.Runs.Wait(r.ID, "request "+old.ID)
 			return map[string]string{"request": old.ID, "state": old.State, "note": "the same step is already asked; its answer arrives as a message. End your turn to wait, or carry on without it."}, nil
 		}
-		if time.Since(old.Updated) < time.Hour {
+		// A failure may be passing, so it answers nobody else; a new ask retries.
+		if old.State != "failed" && time.Since(old.Updated) < time.Hour {
+			m.join(&old, r.ID)
 			return map[string]string{"request": old.ID, "state": old.State, "decision": old.Decision, "reason": old.Reason, "outcome": old.Outcome, "note": "the same step was settled within the hour; this is its answer"}, nil
 		}
 	}
@@ -556,7 +565,7 @@ func (m *Module) Tick() {
 		case "weighing":
 			w, ok := m.C.Runs.Get(req.Warden)
 			late := time.Since(req.Updated) > WardenTimeout
-			if ok && (w.Terminal() || w.Status == core.StatusQuiet || late) {
+			if late || ok && (w.Terminal() || w.Status == core.StatusQuiet) {
 				req.Reason = "It ended without deciding."
 				if late {
 					m.C.Runs.Stop(req.Warden, "out of time to weigh the request")
@@ -663,11 +672,17 @@ func (m *Module) execute(id string) {
 	if err != nil {
 		req.State, req.Outcome = "failed", err.Error()
 	}
-	// Tell first, so the worker never sees the step settled before its word.
-	// The output stays with the person: a script runs as the daemon's user, so
-	// what it prints may be that user's secrets, which the agent never sees.
-	m.tell(req, fmt.Sprintf("%s: %q. Its output is kept for the person.", req.Outcome, core.Clip(req.Want, 80)))
+	// Under act, so no run joins between the membership read here and the
+	// save: one that joined while the script ran is told, one after gets the
+	// settled answer. Tell first, so the worker never sees the step settled
+	// before its word. The output stays with the person: a script runs as the
+	// daemon's user, so what it prints may be that user's secrets, which the
+	// agent never sees.
 	m.act.Lock()
+	if cur, ok := m.get(id); ok {
+		req.Joined = cur.Joined
+	}
+	m.tell(req, fmt.Sprintf("%s: %q. Its output is kept for the person.", req.Outcome, core.Clip(req.Want, 80)))
 	m.save(&req)
 	m.act.Unlock()
 	if !req.PersonOK && m.C.WS.LoadConfig().Autonomy >= 3 { // "tell me after"

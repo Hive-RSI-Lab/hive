@@ -648,3 +648,88 @@ func TestVoteMustBeClean(t *testing.T) {
 		}
 	}
 }
+
+func (g *rig) worker2() core.Run {
+	r, err := g.c.Runs.Start(core.RunSpec{Role: "worker", Harness: "fake", Checkout: g.t.TempDir()})
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	return r
+}
+
+// A run that joins while the step's script runs hears how it went.
+func TestJoinMidStepHearsTheResult(t *testing.T) {
+	g := newRig(t, 2)
+	gate := filepath.Join(t.TempDir(), "gate")
+	req := g.request("install a tool", "x", "T2")
+	if err := g.decide(req, map[string]string{"decision": "do", "reason": "fine", "script": "while [ ! -e " + gate + " ]; do sleep 0.05; done"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.settle(req.ID, "approved"); got.State != "running" {
+		t.Fatalf("not running: %+v", got)
+	}
+	late := g.worker2()
+	if _, err := g.call(late, "warden", map[string]string{"want": "install a tool", "why": "me too", "tier": "T2"}); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(gate, nil, 0o644)
+	if !eventually(func() bool {
+		p := g.run(late.ID).Pending
+		return len(p) > 0 && strings.Contains(p[len(p)-1], "done")
+	}) {
+		t.Fatal("the run that joined mid-step never heard the result")
+	}
+	if s, ok := g.m.Steps(late.ID); !ok || s != "- done: install a tool" {
+		t.Fatalf("steps: %q %v", s, ok)
+	}
+}
+
+// One who asks after a verdict counts it among its steps without freshening
+// it; a failure answers nobody else, so asking again starts a new request.
+func TestLateAskerAndFailures(t *testing.T) {
+	g := newRig(t, 2)
+	req := g.request("install a tool", "x", "T2")
+	if err := g.decide(req, map[string]string{"decision": "decline", "reason": "no"}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := g.m.get(req.ID)
+	late := g.worker2()
+	if _, err := g.call(late, "warden", map[string]string{"want": "install a tool", "why": "me too", "tier": "T2"}); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := g.m.get(req.ID)
+	if s, _ := g.m.Steps(late.ID); s != "- declined: install a tool" || !after.Updated.Equal(before.Updated) {
+		t.Fatalf("late asker: %q, updated %v -> %v", s, before.Updated, after.Updated)
+	}
+	req = g.request("run a flaky thing", "x", "T2")
+	if err := g.decide(req, map[string]string{"decision": "do", "reason": "fine", "script": "exit 1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.settle(req.ID, "approved", "running"); got.State != "failed" {
+		t.Fatalf("not failed: %+v", got)
+	}
+	if again := g.request("run a flaky thing", "x", "T2"); again.ID == req.ID || again.State != "weighing" {
+		t.Fatalf("a failure answered the retry: %+v", again)
+	}
+}
+
+// Joining doesn't stretch the warden's time, and a warden whose run is gone
+// still times out.
+func TestWardenTimeoutHolds(t *testing.T) {
+	g := newRig(t, 2)
+	req := g.request("install a tool", "x", "T2")
+	if _, err := g.call(g.worker2(), "warden", map[string]string{"want": "install a tool", "why": "me too", "tier": "T2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := g.m.get(req.ID); !got.Updated.Equal(req.Updated) {
+		t.Fatalf("a join moved the warden's clock: %v -> %v", req.Updated, got.Updated)
+	}
+	defer func(d time.Duration) { WardenTimeout = d }(WardenTimeout)
+	WardenTimeout = 0
+	gone := Request{ID: core.NewID(), Kind: "request", Origin: g.worker.ID, Want: "w", State: "weighing", Warden: "no-such-run", Created: time.Now().UTC()}
+	g.m.save(&gone)
+	g.m.Tick()
+	if got, _ := g.m.get(gone.ID); got.State != "asked" {
+		t.Fatalf("a warden with no run never timed out: %+v", got)
+	}
+}
