@@ -403,3 +403,23 @@ func TestSelfHostCommitsNeedTheirOwnRead(t *testing.T) {
 		}
 	}
 }
+
+// A bench that prints its result first and then per-run lines still scores,
+// and a score at the end of the last line still wins.
+func TestScoreOf(t *testing.T) {
+	for _, c := range []struct {
+		out  string
+		want float64
+	}{
+		{"59.93\nrun 1: 59.34 tokens/s\nrun 5: 60.20 tokens/s\n", 59.93},
+		{"7\nscore: 42\n", 42},
+		{"5\n", 5},
+	} {
+		if v, err := scoreOf(c.out); err != nil || v != c.want {
+			t.Errorf("scoreOf(%q) = %v, %v; want %v", c.out, v, err, c.want)
+		}
+	}
+	if _, err := scoreOf("all done\n"); err == nil {
+		t.Error("output with no number scored")
+	}
+}
