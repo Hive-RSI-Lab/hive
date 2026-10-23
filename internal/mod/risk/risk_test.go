@@ -187,25 +187,35 @@ func TestWardenSaferAndDecline(t *testing.T) {
 }
 
 // A warden that ends, goes quiet or runs out of time hands the request to
-// the person, who sees what was asked and does it or declines.
+// the person, who sees what was asked and does it or declines. One that has
+// ended is never called late, however long ago it was asked.
 func TestWardenEndsWithoutDeciding(t *testing.T) {
-	for _, status := range []string{core.StatusDone, core.StatusQuiet, "late"} {
+	defer func(d time.Duration) { WardenTimeout = d }(WardenTimeout)
+	for _, c := range []struct {
+		status string
+		late   bool
+	}{{core.StatusDone, false}, {core.StatusQuiet, false}, {"", true}, {core.StatusDone, true}} {
 		g := newRig(t, 2)
 		req := g.request("install a tool", "x", "T2")
-		if status == "late" {
-			defer func(d time.Duration) { WardenTimeout = d }(WardenTimeout)
+		WardenTimeout = 30 * time.Minute
+		if c.late {
 			WardenTimeout = 0
-		} else {
-			g.c.Runs.SetStatus(req.Warden, status, "")
+		}
+		if c.status != "" {
+			g.c.Runs.SetStatus(req.Warden, c.status, "")
 		}
 		g.m.Tick()
 		got, _ := g.m.get(req.ID)
 		a, _ := g.c.Person.Get(got.Ask)
 		if got.State != "asked" || strings.Join(a.Options, "|") != "done|declined" || !strings.Contains(a.Detail, "the brief needs it") {
-			t.Fatalf("%s warden: %+v %+v", status, got, a)
+			t.Fatalf("%+v warden: %+v %+v", c, got, a)
 		}
-		if w := g.run(req.Warden); status == "late" && !w.Terminal() {
-			t.Fatal("the late warden still runs")
+		want := "ended without deciding"
+		if c.status == "" {
+			want = "ran out of time"
+		}
+		if w := g.run(req.Warden); !strings.Contains(got.Reason, want) || !w.Terminal() && c.status != core.StatusQuiet {
+			t.Fatalf("%+v warden: reason %q, run %+v", c, got.Reason, w)
 		}
 	}
 }
@@ -225,7 +235,10 @@ func TestWardenPassesToThePerson(t *testing.T) {
 			!strings.Contains(a.Detail, "install a system package") || !strings.Contains(a.Detail, "needs root") || !strings.Contains(a.Detail, "echo ran > proof") {
 			t.Fatalf("not in front of the person: %+v %+v", got, a)
 		}
-		out, _ := g.call(g.worker, "requests", nil)
+		if _, err := g.call(g.worker, "requests", nil); err == nil {
+			t.Fatal("a worker read the requests")
+		}
+		out, _ := g.call(g.lead(), "requests", nil)
 		if b, _ := json.Marshal(out); !strings.Contains(string(b), "approve "+a.ID) {
 			t.Fatalf("the lead can't see it: %s", b)
 		}
@@ -238,20 +251,58 @@ func TestWardenPassesToThePerson(t *testing.T) {
 	}
 }
 
-// A sudo step on a machine that wants a password goes to the person to run
-// themselves, whoever approved it, and nothing runs.
+func (g *rig) lead() core.Run {
+	l, err := g.c.Runs.Start(core.RunSpec{Role: "lead", Harness: "fake", Checkout: g.t.TempDir()})
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	return l
+}
+
+// The lead sees every pending request, however old, and only the newest
+// settled ones.
+func TestRequestsKeepsEveryPending(t *testing.T) {
+	g := newRig(t, 2)
+	g.m.save(&Request{ID: "old", State: "asked", Created: time.Now().Add(-time.Hour)})
+	for i := 0; i < 25; i++ {
+		g.m.save(&Request{ID: core.NewID(), State: "done", Created: time.Now()})
+	}
+	out, err := g.call(g.lead(), "requests", nil)
+	b, _ := json.Marshal(out)
+	if err != nil || strings.Count(string(b), `"ID":`) != 21 || !strings.Contains(string(b), `"ID":"old"`) {
+		t.Fatalf("%v %s", err, b)
+	}
+}
+
+// sudo may let this machine's user run one command without a password and
+// not another, so a step is judged by what sudo says when it runs: an allowed
+// command runs, and one that wants the password goes to the person, with
+// what ran before it, and is never re-run.
 func TestSudoWithPasswordGoesToThePerson(t *testing.T) {
-	defer func(f func() bool) { sudoOK = f }(sudoOK)
-	sudoOK = func() bool { return false }
-	g := newRig(t, 3)
-	req := g.request("install a system package", "apt-get install -y x", "T2")
-	if err := g.decide(req, map[string]string{"decision": "do", "reason": "fine", "script": "sudo apt-get install -y x"}); err != nil {
+	bin := t.TempDir()
+	fake := "#!/bin/sh\ncase \"$1\" in true|echo) exec \"$@\";; esac\necho 'sudo: a password is required' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "sudo"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got := g.settle(req.ID, "approved", "running")
-	a, _ := g.c.Person.Get(got.Ask)
-	if got.State != "asked" || got.Output != "" || !strings.HasPrefix(a.Title, "Needs your password") || strings.Join(a.Options, "|") != "done|declined" {
-		t.Fatalf("%+v %+v", got, a)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, script := range []string{"sudo echo allowed", "echo before; sudo apt-get install -y x"} {
+		g := newRig(t, 3)
+		req := g.request("install a system package", "apt-get install -y x", "T2")
+		if err := g.decide(req, map[string]string{"decision": "do", "reason": "fine", "script": script}); err != nil {
+			t.Fatal(err)
+		}
+		got := g.settle(req.ID, "approved", "running")
+		a, _ := g.c.Person.Get(got.Ask)
+		if script == "sudo echo allowed" {
+			if got.State != "done" || !strings.Contains(got.Output, "allowed") {
+				t.Fatalf("allowed sudo didn't run: %+v", got)
+			}
+			continue
+		}
+		if got.State != "asked" || !strings.HasPrefix(a.Title, "Needs your password") || strings.Join(a.Options, "|") != "done|declined" ||
+			!strings.Contains(a.Detail, "wants your password") || !strings.Contains(a.Detail, "What it printed:\nbefore") || g.told("done") {
+			t.Fatalf("%+v %+v", got, a)
+		}
 	}
 }
 

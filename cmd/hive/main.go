@@ -127,6 +127,9 @@ func run(args []string) int {
 			}
 			for _, a := range st.Asks {
 				if a.ID == args[0] {
+					if len(a.Options) == 0 {
+						return fmt.Errorf("%s has no options to choose from; answer it with %s answer %s <answer>", a.ID, core.Cmd, a.ID)
+					}
 					opt := a.Options[0]
 					if cmd == "refuse" {
 						opt = a.Options[len(a.Options)-1]

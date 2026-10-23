@@ -688,9 +688,8 @@ func TestWaitingReachesThePerson(t *testing.T) {
 	}
 	h.post("/api/chat", map[string]string{"chat": "lead", "text": "Can I approve the worker installing it?"}, nil)
 	r, _, _ := req(st, "yes")
-	since, _ := json.Marshal(r.Updated)
-	h.wait("the lead to see where the request stands, since when, and how to answer", 2*minute, func(st api.State) bool {
-		return h.replied("lead", `"State":"asked","Warden":"`+r.Warden+`"`)(st) && h.replied("lead", `"Since":`+string(since))(st) && h.replied("lead", "approve "+yes.ID)(st)
+	h.wait("the lead to see where the request stands and how to answer", 2*minute, func(st api.State) bool {
+		return h.replied("lead", `"ID":"`+r.ID+`"`)(st) && h.replied("lead", `"State":"asked","Warden":"`+r.Warden+`"`)(st) && h.replied("lead", "approve "+yes.ID)(st)
 	})
 	for verb, a := range map[string]core.Ask{"approve": yes, "refuse": no} {
 		cmd := exec.Command(bin, verb, a.ID)

@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -115,7 +114,7 @@ func New(c *core.Core, mod *modules.Registry, ag *agents.Agents) *Module {
 	ops := c.Runs.Ops()
 	ops.Register(core.Op{Name: "warden", Help: `{"want","why","steps","tier":"T1|T2|T3","gain":"(optional) large"} -> T1 you weigh yourself; T2 goes to a warden, T3 to a tribunal`, Fn: m.opRequest})
 	ops.Register(core.Op{Name: "decide", Roles: []string{"warden"}, Help: `{"decision":"do|safer|decline|tribunal|person","reason","script":"exactly what runs (do, tribunal; person if you have one)","gain":"(optional) large"}`, Fn: m.opDecide})
-	ops.Register(core.Op{Name: "requests", Help: `{} -> recent requests past the sandbox: who asked, what, why, where each stands`, Fn: m.opRequests})
+	ops.Register(core.Op{Name: "requests", Roles: []string{"lead"}, Help: `{} -> every pending request past the sandbox and the newest settled ones: who asked, what, why, where each stands`, Fn: m.opRequests})
 	ops.Register(core.Op{Name: "install_module", Roles: []string{"lead"}, Help: `{"url","name"}`, Fn: m.opInstall})
 	c.Person.Handle("request", m.onAnswer)
 	c.Person.Handle("module", m.onModule)
@@ -165,17 +164,20 @@ func (m *Module) List() []Request {
 	return out
 }
 
-// opRequests shows an agent (the lead, mostly) the newest requests, so it can
-// tell the person what waits on them and how to answer.
+// opRequests shows the lead every pending request and the newest settled
+// ones, so it can tell the person what waits on them and how to answer.
 func (m *Module) opRequests(core.Run, json.RawMessage) (any, error) {
 	type view struct {
 		ID, From, Want, Why, State, Warden, Decision, Reason, Outcome, Answer string
 		Since                                                                 time.Time
 	}
 	var out []view
+	settled := 0
 	for _, r := range m.List() {
-		if len(out) == 20 {
-			break
+		if r.State == "done" || r.State == "declined" || r.State == "failed" {
+			if settled++; settled > 20 {
+				continue
+			}
 		}
 		v := view{r.ID, r.Origin, core.Clip(r.Want, 200), core.Clip(r.Why, 300), r.State, r.Warden, r.Decision, core.Clip(r.Reason, 300), r.Outcome, "", r.Updated}
 		if a, ok := m.C.Person.Get(r.Ask); ok && a.Answer == "" {
@@ -269,12 +271,10 @@ func (m *Module) toPerson(req *Request, why string) {
 	m.ask(req, why, "Do it yourself and answer done, or decline.", "done", "declined")
 }
 
-// sudoRe finds sudo in a script; sudoOK says whether it works without a
-// password here. A test swaps sudoOK.
-var (
-	sudoRe = regexp.MustCompile(`\bsudo\b`)
-	sudoOK = func() bool { return exec.Command("sudo", "-n", "true").Run() == nil }
-)
+// sudoPassword is what sudo prints when it wants a password it can't read:
+// a step runs with no terminal, so that is where a sudo step stops when this
+// machine wants the person's password for that command.
+var sudoPassword = regexp.MustCompile(`sudo: (a password is required|a terminal is required|no tty present)`)
 
 // quote fences another agent's words so they read as data.
 func quote(req Request) string {
@@ -494,8 +494,9 @@ func (m *Module) Tick() {
 		switch req.State {
 		case "weighing":
 			w, ok := m.C.Runs.Get(req.Warden)
-			late := time.Since(req.Updated) > WardenTimeout
-			if ok && (w.Terminal() || w.Status == core.StatusQuiet || late) {
+			ended := ok && (w.Terminal() || w.Status == core.StatusQuiet)
+			late := ok && !ended && time.Since(req.Updated) > WardenTimeout
+			if ended || late {
 				req.Reason = "It ended without deciding."
 				if late {
 					m.C.Runs.Stop(req.Warden, "out of time to weigh the request")
@@ -586,17 +587,18 @@ func (m *Module) execute(id string) {
 		m.tell(req, err.Error()+"; the person decides.")
 		return
 	}
-	if sudoRe.MatchString(req.Script) && !sudoOK() {
-		m.ask(&req, "Needs your password", "This step needs sudo and this machine wants a password for it, so the Hive can't run it. Run it yourself in a shell and answer done, or decline.", "done", "declined")
-		m.act.Unlock()
-		return
-	}
 	req.State = "running"
 	m.save(&req)
 	m.act.Unlock()
 
 	out, err := m.run(req)
 	req.Output = core.Clip(out, 4000)
+	if sudoPassword.MatchString(out) { // never re-run: what came before sudo has run
+		m.act.Lock()
+		m.ask(&req, "Needs your password", "This step stopped at sudo because this machine wants your password for it, and the Hive can't type your password. Anything before that line has already run (its output is below). Finish it yourself in a shell, entering your password, and answer done, or decline.\n\nWhat it printed:\n"+req.Output, "done", "declined")
+		m.act.Unlock()
+		return
+	}
 	req.State, req.Outcome = "done", "done"
 	if err != nil {
 		req.State, req.Outcome = "failed", err.Error()
