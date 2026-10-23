@@ -598,14 +598,28 @@ func TestStalls(t *testing.T) {
 	for title := range asks {
 		h.wait(title+" to land", 4*minute, taskStage("stall", title, work.StageDone))
 	}
-	st := h.state()
-	alerts := map[string][]string{}
-	for _, a := range st.Alerts {
-		if a.Kind == "stall" {
-			alerts[a.Ref] = append(alerts[a.Ref], a.Text)
+	hung := map[string]string{"hung worker": "restarted its turn", "hung reviewer": "restarted its turn", "hung check": "handed it to the lead"}
+	stalls := func(st api.State) map[string][]string {
+		alerts := map[string][]string{}
+		for _, a := range st.Alerts {
+			if a.Kind == "stall" {
+				alerts[a.Ref] = append(alerts[a.Ref], a.Text)
+			}
 		}
+		return alerts
 	}
-	for title, did := range map[string]string{"hung worker": "restarted its turn", "hung reviewer": "restarted its turn", "hung check": "handed it to the lead"} {
+	// A task can land before the watcher's next pass says it moved on.
+	st := h.wait("every stall alert to say it moved on", minute, func(st api.State) bool {
+		for title := range hung {
+			tk, _ := task(st, "stall", title)
+			if got := stalls(st)["task:"+tk.ID]; len(got) == 0 || !strings.Contains(got[len(got)-1], "moved on") {
+				return false
+			}
+		}
+		return true
+	})
+	alerts := stalls(st)
+	for title, did := range hung {
 		tk, _ := task(st, "stall", title)
 		if got := alerts["task:"+tk.ID]; len(got) != 1 || !strings.Contains(got[0], did) || !strings.Contains(got[0], "moved on") {
 			t.Fatalf("%s: want one alert that says %q and that it moved on, got %q", title, did, got)
@@ -877,6 +891,36 @@ func TestStoppedWorkComesBack(t *testing.T) {
 	}
 }
 
+// TestWardenOutlivesARestart: a warden mid-turn when the Hive restarts still
+// decides, and once its process ends it leaves the live list. Here the test
+// process adopts the orphaned turn and never reaps it, as a container's PID 1
+// may not, so the ended turn lingers as a zombie, which is not alive.
+func TestWardenOutlivesARestart(t *testing.T) {
+	if adopt == nil {
+		t.Skip("a child subreaper is Linux's")
+	}
+	adopt()
+	h := start(t)
+	h.seed("me/restart", map[string]string{".hive/project.json": `{"test": "true"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "restart", "repo": "me/restart"}, nil)
+	h.post("/api/ask", map[string]string{"project": "restart", "title": "install", "known": "FAKE:needpackage FAKE:wardenslow"}, nil)
+	warden := func(st api.State) (core.Run, bool) {
+		for _, r := range st.Runs {
+			if r.Role == "warden" {
+				return r, true
+			}
+		}
+		return core.Run{}, false
+	}
+	h.wait("the warden's first turn", 2*minute, func(st api.State) bool { w, ok := warden(st); return ok && w.Status == core.StatusRunning })
+	h.kill()
+	h.launch()
+	st := h.wait("the warden to decide and leave the live list", 2*minute, func(st api.State) bool { w, ok := warden(st); return ok && w.Terminal() })
+	if w, _ := warden(st); w.Status != core.StatusDone || len(st.Requests) == 0 || st.Requests[0].Decision != "do" {
+		t.Fatalf("warden %s, requests %+v", w.Status, st.Requests)
+	}
+}
+
 // TestOutsideStep: an ask longer than a label reaches the worker whole, and a
 // path it names outside the checkout goes to a tribunal as a T3 step. Under
 // HIVE_E2E_SANDBOX=auto the worker can't see the path and must still file it.
@@ -983,6 +1027,9 @@ func TestAgentsReadTheHive(t *testing.T) {
 
 func init() { _ = fmt.Sprint }
 
+// adopt makes this process adopt its daemons' orphans (Linux only).
+var adopt func()
+
 // TestLiveWarden is the host probe for a real harness: run it with
 // HIVE_E2E_HARNESS=claude. A worker that needs a package outside its checkout
 // should file a T2 step, and a real warden should settle it.
@@ -1005,6 +1052,14 @@ func TestLiveWarden(t *testing.T) {
 	for _, r := range st.Requests {
 		t.Logf("%s %s: decision %q state %q reason %q script %q", r.Tier, r.Want, r.Decision, r.State, r.Reason, r.Script)
 	}
+	h.wait("the warden that decided to end its turn", 5*minute, func(st api.State) bool {
+		for _, r := range st.Runs {
+			if r.Role == "warden" && r.Status == core.StatusRunning {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // TestLiveTribunal is the host probe for a real panel: run it with
@@ -1134,7 +1189,7 @@ func TestStepBack(t *testing.T) {
 	}
 	stepback := func(st api.State, project string) (improve.StepBack, bool) {
 		for _, s := range st.StepBacks {
-			if s.Project == project && s.Ended.After(s.Started) {
+			if s.Project == project && !s.Ended.IsZero() { // Windows' clock can stamp both ends alike
 				return s, true
 			}
 		}
