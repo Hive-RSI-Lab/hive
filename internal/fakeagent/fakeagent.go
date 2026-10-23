@@ -97,6 +97,15 @@ func Main(argv []string) int {
 			_, err = call("finish", map[string]string{"status": "done", "account": "filed one ask"}, time.Minute)
 		}
 		text = "swept"
+	case "stepback":
+		// The goal steers the setup it designs; with no key it designs none.
+		for key, ask := range map[string]string{"FAKE:stepbackwin": "FAKE:raisescore", "FAKE:stepbacklose": "FAKE:lowerscore", "FAKE:stepbackfail": "FAKE:block"} {
+			if strings.Contains(all, key) {
+				raw, _ := json.Marshal(map[string]any{"why": "FAKE: a simpler setup", "system": "", "asks": []string{ask}})
+				os.WriteFile(filepath.Join(os.Getenv("HIVE_BOX"), "experiment.json"), raw, 0o644)
+			}
+		}
+		_, err = call("finish", map[string]string{"status": "done", "account": "stepped back"}, time.Minute)
 	default:
 		_, err = call("finish", map[string]string{"status": "done", "account": "fake " + role + " done"}, time.Minute)
 	}

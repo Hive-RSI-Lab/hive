@@ -12,18 +12,19 @@ import (
 
 // Turn is one invocation of an agent session.
 type Turn struct {
-	Role       string
-	SessionID  string
-	Resume     bool   // continue SessionID instead of starting it
-	SystemFile string // appended system prompt, as a path the agent process sees
-	SystemText string // the same prompt inline (used inside sandboxes, where argv has room)
-	Model      string
-	ReadOnly   bool     // no write or exec tools at all (reviewer, tribunal)
-	RunDir     string   // the run's inputs; a read-only turn may read them besides its checkout
-	Tools      []string // explicit tool list; nil means the harness default
-	Schema     string   // JSON schema for a structured final answer
-	Sandboxed  bool     // inside a Hive sandbox (permission prompts are meaningless there)
-	MaxOutput  int      // cap on one reply's tokens; 0 is the harness default
+	Role         string
+	SessionID    string
+	Resume       bool   // continue SessionID instead of starting it
+	SystemFile   string // appended system prompt, as a path the agent process sees
+	SystemText   string // the same prompt inline (used inside sandboxes, where argv has room)
+	Model        string
+	ReadOnly     bool     // no write or exec tools at all (reviewer, tribunal)
+	RunDir       string   // the run's inputs; a read-only turn may read them besides its checkout
+	Tools        []string // explicit tool list; nil means the harness default
+	Schema       string   // JSON schema for a structured final answer
+	Sandboxed    bool     // inside a Hive sandbox (permission prompts are meaningless there)
+	MaxOutput    int      // cap on one reply's tokens; 0 is the harness default
+	MaxBudgetUSD float64  // cap on the turn's spend; 0 is none
 }
 
 // Event is a normalized line of harness output.
@@ -132,6 +133,9 @@ func (Claude) Args(t Turn) []string {
 	}
 	if t.Schema != "" {
 		a = append(a, "--json-schema", t.Schema)
+	}
+	if t.MaxBudgetUSD > 0 {
+		a = append(a, "--max-budget-usd", fmt.Sprintf("%.2f", t.MaxBudgetUSD))
 	}
 	return a
 }

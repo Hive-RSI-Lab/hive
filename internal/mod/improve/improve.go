@@ -58,11 +58,14 @@ type Module struct {
 	queue    chan work.Task
 	lastSeen int64 // journal seq at the last sweep start
 	retryAt  map[string]time.Time
+
+	stepbacks map[string]*StepBack
+	busy      map[string]bool
 }
 
 // New loads measurements and sweeps.
 func New(c *core.Core, a *agents.Agents, w *work.Module, ch *chat.Module) *Module {
-	m := &Module{C: c, Agents: a, Work: w, Chat: ch, scores: map[string][]Measurement{}, sweeps: map[string]*Sweep{}, queue: make(chan work.Task, 64), retryAt: map[string]time.Time{}}
+	m := &Module{C: c, Agents: a, Work: w, Chat: ch, scores: map[string][]Measurement{}, sweeps: map[string]*Sweep{}, queue: make(chan work.Task, 64), retryAt: map[string]time.Time{}, stepbacks: map[string]*StepBack{}, busy: map[string]bool{}}
 	apply := func(e core.Event) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -78,6 +81,10 @@ func New(c *core.Core, a *agents.Agents, w *work.Module, ch *chat.Module) *Modul
 			if s.Status == "running" {
 				m.lastSeen = e.Seq
 			}
+		case "stepback.saved":
+			var s StepBack
+			e.Decode(&s)
+			m.stepbacks[s.ID] = &s
 		}
 	}
 	c.J.Replay(apply)
