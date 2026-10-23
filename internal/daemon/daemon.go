@@ -98,6 +98,8 @@ func Run(ws core.Workspace, waitFor int) error {
 	if waitFor > 0 {
 		if c, err := api.Dial(ws); err == nil {
 			from = c.Info.Version
+		} else {
+			fmt.Printf("hive: can't read the replaced daemon's version (%v), so a hive-v0 keeps its name\n", err)
 		}
 		if inUnit {
 			// An old unit stops everything in it as the old daemon exits; outlive that and hand the restart to systemd below.

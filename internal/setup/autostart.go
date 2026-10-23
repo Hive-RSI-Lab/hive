@@ -11,16 +11,34 @@ import (
 
 // EnableAutostart makes the Hive start whenever the machine (or the person's
 // session) starts, so an ask made in the evening is done in the morning.
-func EnableAutostart(root string) error { return EnableAutostartAt(Executable(), root) }
+func EnableAutostart(root string) error {
+	if err := EnableAutostartAt(Executable(), root); err != nil {
+		return err
+	}
+	if runtime.GOOS == "darwin" {
+		// Unload first: load on a loaded label keeps its old path.
+		exec.Command("launchctl", "unload", launchAgent()).Run()
+		exec.Command("launchctl", "load", "-w", launchAgent()).Run()
+	}
+	return nil
+}
 
-// EnableAutostartAt starts the binary at exe for the Hive in root.
+// launchAgent is the macOS autostart's plist.
+func launchAgent() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "LaunchAgents", "dev.hive.daemon.plist")
+}
+
+// EnableAutostartAt starts the binary at exe for the Hive in root. It runs
+// during a handover too, so on macOS it only rewrites the plist: unloading
+// the job then could stop the daemon doing the handover, and the next login
+// reads the new plist.
 func EnableAutostartAt(exe, root string) error {
 	switch runtime.GOOS {
 	case "windows":
 		return windowsAutostart(exe, root, true)
 	case "darwin":
-		home, _ := os.UserHomeDir()
-		path := filepath.Join(home, "Library", "LaunchAgents", "dev.hive.daemon.plist")
+		path := launchAgent()
 		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -33,13 +51,7 @@ func EnableAutostartAt(exe, root string) error {
 </dict></plist>
 `, exe, root, filepath.Join(root, ".hive", "daemon.log"), filepath.Join(root, ".hive", "daemon.log.err"))
 		os.MkdirAll(filepath.Dir(path), 0o755)
-		if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
-			return err
-		}
-		// Unload first: load on a loaded label keeps its old path.
-		exec.Command("launchctl", "unload", path).Run()
-		exec.Command("launchctl", "load", "-w", path).Run()
-		return nil
+		return os.WriteFile(path, []byte(plist), 0o644)
 	default:
 		home, _ := os.UserHomeDir()
 		unit := filepath.Join(home, ".config", "systemd", "user", "hive.service")
@@ -87,9 +99,8 @@ func DisableAutostart() {
 	case "windows":
 		windowsAutostart("", "", false)
 	case "darwin":
-		path := filepath.Join(home, "Library", "LaunchAgents", "dev.hive.daemon.plist")
-		exec.Command("launchctl", "unload", "-w", path).Run()
-		os.Remove(path)
+		exec.Command("launchctl", "unload", "-w", launchAgent()).Run()
+		os.Remove(launchAgent())
 	default:
 		exec.Command("systemctl", "--user", "disable", "hive.service").Run()
 		os.Remove(filepath.Join(home, ".config", "systemd", "user", "hive.service"))
@@ -104,7 +115,7 @@ func AutostartEnabled() bool {
 	case "windows":
 		return windowsAutostartEnabled()
 	case "darwin":
-		_, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", "dev.hive.daemon.plist"))
+		_, err := os.Stat(launchAgent())
 		return err == nil
 	default:
 		for _, p := range []string{filepath.Join(home, ".config", "systemd", "user", "hive.service"), filepath.Join(home, ".config", "autostart", "hive.desktop")} {
