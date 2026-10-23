@@ -72,3 +72,7 @@ Windows (PowerShell):
     irm https://hive.ihsan.cc/uninstall.ps1 | iex
 
 Your folder is left alone.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
