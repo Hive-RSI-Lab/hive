@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -190,5 +191,100 @@ func TestWheelScrollsDetail(t *testing.T) {
 	m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 	if m.stack[0].scroll != 0 {
 		t.Fatalf("wheel up: scroll %d, want 0", m.stack[0].scroll)
+	}
+}
+
+// A run's brief and steps wrap to the main pane, so no line loses its end.
+func TestDetailWrapsToItsPane(t *testing.T) {
+	words := strings.Repeat("every word of this brief stays readable ", 8)
+	for _, w := range []int{80, 120} {
+		m := testModel(w, 40)
+		m.pick(sideRow{sec: secDash})
+		m.runs["r1"] = api.RunDetail{Run: core.Run{RunSpec: core.RunSpec{ID: "r1", Role: "worker", Brief: words}},
+			Steps: []api.Step{{Turn: 1, Kind: "text", Text: words}}}
+		m.stack = []detail{{kind: "run", id: "r1", title: "r1"}}
+		if v := plain(m.View()); strings.Count(v, "readable") != 16 || strings.Contains(v, "…") {
+			t.Errorf("%d columns: detail lines are cut:\n%s", w, v)
+		}
+	}
+}
+
+// A new message in a chat the TUI already holds shows its text, rendered, in
+// the live feed: each batch of events fetches each chat it names once.
+func TestFeedRefreshesHeldChats(t *testing.T) {
+	m := testModel(120, 40)
+	m.pick(sideRow{sec: secDash})
+	posted := func(seq int64, chat, id string) core.Event {
+		data, _ := json.Marshal(map[string]string{"chat": chat, "id": id, "thread": id, "from": "lead-x"})
+		return core.Event{Seq: seq, At: time.Now(), Kind: "chat.posted", Data: data}
+	}
+	cmd := m.addEvents([]core.Event{posted(1, "lead", "4"), posted(2, "lead", "5"), posted(3, "project:textkit", "p1")})
+	if b, ok := cmd().(tea.BatchMsg); !ok || len(b) != 2 {
+		t.Fatalf("want one fetch per chat, got %#v", cmd())
+	}
+	m.Update(chatMsg{"lead", append(m.msgs["lead"],
+		chat.Message{ID: "4", Thread: "4", From: "lead-x", Text: "**First** new reply"},
+		chat.Message{ID: "5", Thread: "5", From: "lead-x", Text: "Second `new` reply"})})
+	v := plain(m.View())
+	for _, want := range []string{"First new reply", "Second new reply"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("feed lacks %q:\n%s", want, v)
+		}
+	}
+	if m.addEvents([]core.Event{posted(4, "lead", "6")}) == nil {
+		t.Error("a later message in a held chat fetched nothing")
+	}
+}
+
+// A thread that takes over the screen, on a resize or on coming back to its
+// chat, gets the keys, and Escape closes it.
+func TestTakeoverTakesTheFocus(t *testing.T) {
+	m := testModel(120, 40)
+	for _, k := range []tea.KeyType{tea.KeyUp, tea.KeyEnter, tea.KeyTab} { // open the last thread, then go to the sidebar
+		m.Update(tea.KeyMsg{Type: k})
+	}
+	if m.thread != "1" || m.focus != 0 {
+		t.Fatalf("setup: thread %q focus %d", m.thread, m.focus)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m.focus != 2 || !m.composing || m.reply != "1" {
+		t.Fatalf("after the resize: focus %d, box on %q (%v)", m.focus, m.reply, m.composing)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.thread != "" || m.focus != 1 {
+		t.Fatalf("esc: thread %q focus %d", m.thread, m.focus)
+	}
+
+	m = testModel(120, 40)
+	m.thread, m.focus = "1", 0
+	m.pick(sideRow{sec: secDash})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.pick(sideRow{sec: secChats})
+	if m.focus != 2 || m.reply != "1" {
+		t.Fatalf("back in the chat: focus %d, box on %q", m.focus, m.reply)
+	}
+}
+
+// Message bodies render markdown in the channel and in the thread pane.
+func TestMessagesRenderMarkdown(t *testing.T) {
+	m := testModel(120, 40)
+	m.msgs["lead"] = append(m.msgs["lead"], chat.Message{ID: "9", Thread: "9", From: "lead-x", Name: "lead", Text: "**Done**: see `parser/`\n- one item", At: time.Now()})
+	m.thread, m.focus = "9", 2
+	m.focusBox("9")
+	v := plain(m.View())
+	if strings.Count(v, "Done: see parser/") != 2 || strings.Count(v, "• one item") != 2 || strings.Contains(v, "**") {
+		t.Errorf("want the message rendered in both panes:\n%s", v)
+	}
+}
+
+// On a short screen a long draft keeps the whole box, border and all.
+func TestShortScreenKeepsTheBox(t *testing.T) {
+	for _, sz := range [][2]int{{40, 10}, {80, 12}} {
+		m := testModel(sz[0], sz[1])
+		m.focusBox("")
+		m.input.SetValue("one\ntwo\nthree\nfour\nfive\nsix\nseven")
+		if v := m.View(); !strings.Contains(v, "╭") || !strings.Contains(v, "╰") {
+			t.Errorf("%dx%d: the box is cut:\n%s", sz[0], sz[1], v)
+		}
 	}
 }

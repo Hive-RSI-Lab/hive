@@ -37,6 +37,7 @@ func (m *model) fetchFeed() tea.Cmd {
 // addEvents writes journal events into the feed (the newest 500 rows).
 func (m *model) addEvents(evs []core.Event) tea.Cmd {
 	var fetch []tea.Cmd
+	fetching := map[string]bool{}
 	for _, e := range evs {
 		if e.Seq <= m.feedSeq {
 			continue
@@ -56,8 +57,8 @@ func (m *model) addEvents(evs []core.Event) tea.Cmd {
 			case "hive":
 				r.from = "hive"
 			}
-			if _, ok := m.msgs[p.Chat]; !ok {
-				m.msgs[p.Chat] = nil
+			if !fetching[p.Chat] { // once per chat, so the new message's text shows
+				fetching[p.Chat] = true
 				fetch = append(fetch, m.fetchChat(p.Chat))
 			}
 		case "task.saved":
@@ -225,7 +226,7 @@ func (m *model) viewFeed() []string {
 func (m *model) feedText(r feedRow) string {
 	for _, msg := range m.msgs[r.chat] {
 		if msg.ID == r.msg {
-			return oneLine(msg.Text)
+			return preview(msg.Text)
 		}
 	}
 	return oneLine(r.text)

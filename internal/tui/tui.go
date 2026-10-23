@@ -283,6 +283,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		return m, m.settle()
 	case sentMsg:
 		for i, o := range m.outbox {
 			if o.n == msg.out.n {
@@ -442,6 +443,16 @@ func (m *model) cycle(fwd bool) tea.Cmd {
 		return m.focusBox(m.thread)
 	}
 	return nil
+}
+
+// settle gives a thread that takes over the screen the focus, since nothing
+// else is on screen to take the keys.
+func (m *model) settle() tea.Cmd {
+	if !m.takeover() || m.focus == 2 {
+		return nil
+	}
+	m.focus = 2
+	return m.focusBox(m.thread)
 }
 
 func (m *model) push(d detail) tea.Cmd {

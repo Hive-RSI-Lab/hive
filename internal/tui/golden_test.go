@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -118,6 +119,35 @@ func replyDraft(m *model) {
 	m.input.SetValue("Keep the alias for one release, then remove it in 0.9.")
 }
 
+func newThread(m *model) {
+	m.focusBox("")
+	m.input.SetValue("Plan the 0.9 release: what's left, what's risky, and who's doing what. Short list, please.")
+}
+
+func longReply(m *model) {
+	replyDraft(m)
+	m.input.SetValue(m.input.Value() + "\n\nBefore you merge:\n- add a deprecation notice to the alias\n- note it in CHANGELOG under Breaking\n- ask reviewer to check the docs examples import from the new path")
+}
+
+func sending(m *model) {
+	m.thread, m.focus = "m3", 2
+	m.focusBox("m3")
+	m.outbox = []outMsg{{chat: m.chat, thread: "m3", text: "Keep the alias for one release, then remove it in 0.9."}}
+}
+
+func sent(m *model) {
+	m.thread, m.focus = "m3", 2
+	m.focusBox("m3")
+	m.Update(sentMsg{out: outMsg{chat: m.chat, thread: "m3"}, msg: chat.Message{ID: "m8", Thread: "m3", From: "person", At: m.msgs[m.chat][4].At.Add(13 * time.Minute), Text: "Keep the alias for one release, then remove it in 0.9."}})
+}
+
+// failed is the PR's deviation from 02d: the text goes back in the box and
+// the hint line says why, so the whole screen is the frame.
+func failed(m *model) {
+	sending(m)
+	m.Update(sentMsg{out: m.outbox[0], err: errors.New("connection lost")})
+}
+
 // TestDesignFrames renders each screen at a fixed size and compares the text
 // with testdata, which is the design's frame plus the deviations the PR lists.
 func TestDesignFrames(t *testing.T) {
@@ -127,24 +157,16 @@ func TestDesignFrames(t *testing.T) {
 		set  func(m *model)
 	}{
 		{"01-thread-open-reply", 120, 36, replyDraft},
-		{"03-new-thread", 120, 36, func(m *model) {
-			m.focusBox("")
-			m.input.SetValue("Plan the 0.9 release: what's left, what's risky, and who's doing what. Short list, please.")
-		}},
-		{"02a-long-reply", 120, 36, func(m *model) {
-			replyDraft(m)
-			m.input.SetValue(m.input.Value() + "\n\nBefore you merge:\n- add a deprecation notice to the alias\n- note it in CHANGELOG under Breaking\n- ask reviewer to check the docs examples import from the new path")
-		}},
-		{"02b-sending", 120, 18, func(m *model) {
-			m.thread, m.focus = "m3", 2
-			m.focusBox("m3")
-			m.outbox = []outMsg{{chat: m.chat, thread: "m3", text: "Keep the alias for one release, then remove it in 0.9."}}
-		}},
-		{"02c-sent", 120, 18, func(m *model) {
-			m.thread, m.focus = "m3", 2
-			m.focusBox("m3")
-			m.Update(sentMsg{out: outMsg{chat: m.chat, thread: "m3"}, msg: chat.Message{ID: "m8", Thread: "m3", From: "person", At: m.msgs[m.chat][4].At.Add(13 * time.Minute), Text: "Keep the alias for one release, then remove it in 0.9."}})
-		}},
+		{"03-new-thread", 120, 36, newThread},
+		{"03-new-thread-80x24", 80, 24, newThread},
+		{"02a-long-reply", 120, 36, longReply},
+		{"02a-long-reply-80x24", 80, 24, longReply},
+		{"02b-sending", 120, 18, sending},
+		{"02b-sending-80x24", 80, 24, sending},
+		{"02c-sent", 120, 18, sent},
+		{"02c-sent-80x24", 80, 24, sent},
+		{"02d-failed", 120, 18, failed},
+		{"02d-failed-80x24", 80, 24, failed},
 		{"04a-80x24-channel", 80, 24, func(m *model) { m.threadSel = 1 }},
 		{"05a-dashboard-all", 120, 36, func(m *model) { designFeed(m); m.feedSel = 13 }},
 		{"05a-dashboard-80x24", 80, 24, func(m *model) { designFeed(m); m.feedSel = 13 }},
@@ -159,7 +181,7 @@ func TestDesignFrames(t *testing.T) {
 		m := designModel(c.w, c.h)
 		c.set(m)
 		got := plain(m.View())
-		if strings.HasPrefix(c.name, "02b") || strings.HasPrefix(c.name, "02c") { // the frame is the thread pane alone
+		if c.name == "02b-sending" || c.name == "02c-sent" { // the frame is the thread pane alone
 			got = column(got, 72, 48, 16)
 		}
 		want, err := os.ReadFile("testdata/" + c.name + ".txt")

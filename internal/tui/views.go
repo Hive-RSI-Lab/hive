@@ -397,7 +397,7 @@ func (m *model) keyDetailAction(d *detail, key string) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) viewDetail(d *detail) []string {
-	w := m.w - 2
+	w := m.mainW() - 3
 	var lines []string
 	kv := func(k, v string) { lines = append(lines, stDim.Render(fmt.Sprintf("%-10s", k))+" "+v) }
 	switch d.kind {

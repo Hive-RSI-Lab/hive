@@ -163,6 +163,7 @@ func (m *model) keySidebar(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) pick(r sideRow) tea.Cmd {
 	m.stack = nil
+	var cmd tea.Cmd
 	switch {
 	case r.sec >= 0:
 		m.section = r.sec
@@ -171,9 +172,9 @@ func (m *model) pick(r sideRow) tea.Cmd {
 			m.chat, m.thread, m.threadSel, m.chScroll = r.chatID, "", -1, 0
 		}
 		m.section = secChats
-		return m.fetchChat(r.chatID)
+		cmd = m.fetchChat(r.chatID)
 	}
-	return nil
+	return tea.Batch(cmd, m.settle())
 }
 
 // openChat jumps to a chat from elsewhere (an agent's log, the dashboard).
@@ -489,8 +490,8 @@ func (m *model) viewThread(w int) pane {
 func (m *model) compose(label, placeholder, reply string, w int) []string {
 	if m.composing && m.reply == reply && !m.editing {
 		m.input.Placeholder = placeholder
-		m.input.SetWidth(w - 3) // the textarea keeps its last cell for the cursor
-		m.input.SetHeight(8)
+		m.input.SetWidth(w - 3)          // the textarea keeps its last cell for the cursor
+		m.input.SetHeight(min(8, m.h-6)) // the whole box stays on a short screen
 		lines := strings.Split(m.input.View(), "\n")
 		for i, l := range lines {
 			lines[i] = ansi.Truncate(l, w-4, "")
@@ -515,8 +516,8 @@ func (m *model) compose(label, placeholder, reply string, w int) []string {
 // composeLabel is the box's label; attachment chips join it here.
 func (m *model) composeLabel(label string) string { return label }
 
-// body renders a message's text to width w.
-func (m *model) body(text string, w int) []string { return wrap(text, w) }
+// body renders a message's markdown to width w.
+func (m *model) body(text string, w int) []string { return markdown(text, w) }
 
 func msgHead(msg chat.Message) string {
 	return who(msg) + "  " + stDim.Render(msg.At.Local().Format("15:04"))
