@@ -1,17 +1,16 @@
 package report
 
 import (
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/report/contracttest"
 )
 
 // gen makes a token body of n characters from alphabet, so no key-shaped
@@ -127,25 +126,48 @@ func open(t *testing.T, edit func(*core.Config)) *core.Core {
 	return c
 }
 
-func TestOffSendsNothing(t *testing.T) {
-	hits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
-	defer srv.Close()
-	c := open(t, func(cfg *core.Config) { cfg.ShareURL = srv.URL })
-	c.J.MustAppend("task.saved", map[string]any{"id": "t1", "stage": "blocked", "reason": "no"})
-	if res, _ := (&Module{C: c}).Send(); res != "sharing is off" || hits != 0 || len(Sent(c.WS)) != 0 {
-		t.Fatalf("off: %q, %d requests, %d copies", res, hits, len(Sent(c.WS)))
+// sharing opens a core with sharing on since a minute ago, sending to url,
+// and n doctor failures waiting.
+func sharing(t *testing.T, url string, n int) *core.Core {
+	c := open(t, func(cfg *core.Config) {
+		cfg.SetShare(true)
+		cfg.ShareURL, cfg.Share = url, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	})
+	for i := 0; i < n; i++ {
+		Note(c.WS, Failure{Kind: "doctor", Text: fmt.Sprint("check ", i)})
+	}
+	return c
+}
+
+func requests(e *contracttest.Endpoint) int { raw, _ := e.Got(); return len(raw) }
+
+// copies says the local copies are byte for byte the bodies that left.
+func copies(t *testing.T, ws core.Workspace, bodies [][]byte) {
+	t.Helper()
+	sent := Sent(ws)
+	if len(sent) != len(bodies) {
+		t.Fatalf("%d copies for %d reports sent", len(sent), len(bodies))
+	}
+	for i, name := range sent {
+		if raw, _ := os.ReadFile(name); string(raw) != string(bodies[i]) {
+			t.Fatalf("copy %s differs from what was sent:\n%s\n%s", name, raw, bodies[i])
+		}
 	}
 }
 
+func TestOffSendsNothing(t *testing.T) {
+	e := contracttest.New(t)
+	c := open(t, func(cfg *core.Config) { cfg.ShareURL = e.URL })
+	c.J.MustAppend("task.saved", map[string]any{"id": "t1", "stage": "blocked", "reason": "no"})
+	if res, _ := (&Module{C: c}).Send(); res != "sharing is off" || requests(e) != 0 || len(Sent(c.WS)) != 0 {
+		t.Fatalf("off: %q, %d requests, %d copies", res, requests(e), len(Sent(c.WS)))
+	}
+}
+
+// One send is one report per failure, oldest first, then the usage report.
 func TestSendOnce(t *testing.T) {
-	var got [][]byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		got = append(got, raw)
-	}))
-	defer srv.Close()
-	c := open(t, func(cfg *core.Config) { cfg.ShareURL = srv.URL })
+	e := contracttest.New(t)
+	c := open(t, func(cfg *core.Config) { cfg.ShareURL = e.URL })
 	c.J.MustAppend("task.saved", map[string]any{"id": "old", "stage": "blocked", "reason": "before sharing was on"})
 	cfg := c.WS.LoadConfig()
 	cfg.SetShare(true) // in the same second as the old event, which stays home
@@ -156,73 +178,112 @@ func TestSendOnce(t *testing.T) {
 	c.J.MustAppend("task.saved", map[string]any{"id": "t1", "stage": "stopped", "reason": "red tests", "log": []map[string]string{{"text": "tests failed"}}})
 	c.J.MustAppend("task.saved", map[string]any{"id": "t1", "stage": "stopped", "reason": "red tests"})
 	m := &Module{C: c}
-	if res, _ := m.Send(); len(got) != 1 {
-		t.Fatalf("want one batch, got %d (%s)", len(got), res)
+	res, _ := m.Send()
+	raw, got := e.Got()
+	if res != "sent 3, refused 0" || len(got) != 3 {
+		t.Fatalf("want 3 reports, got %d (%s)", len(got), res)
 	}
-	var p Payload
-	if err := json.Unmarshal(got[0], &p); err != nil {
-		t.Fatal(err)
+	for _, r := range got {
+		if r.Install != cfg.InstallID {
+			t.Fatalf("install %q, want %q", r.Install, cfg.InstallID)
+		}
 	}
-	if p.Schema != 1 || p.Install == "" || p.Usage.Runs != 1 || p.Usage.Turns != 1 || p.Usage.CostUSD != 0.5 || len(p.Failures) != 2 {
-		t.Fatalf("payload: %s", got[0])
+	if r := got[0]; r.Type != "failure" || r.Kind != "run-error:worker" || r.Message != "turn failed" || !strings.HasPrefix(r.Log, "boom with ") {
+		t.Fatalf("first: %+v", r)
 	}
-	if p.Failures[0].Kind != "run-error" || p.Failures[0].Role != "worker" || p.Failures[1].Kind != "task-stopped" || p.Failures[1].Excerpt != "tests failed" {
-		t.Fatalf("failures: %+v", p.Failures)
+	if r := got[1]; r.Type != "failure" || r.Kind != "task-stopped" || r.Log != "tests failed" {
+		t.Fatalf("second: %+v", r)
 	}
-	if strings.Contains(string(got[0]), leaks[0].secret) || strings.Contains(string(got[0]), "before sharing") {
-		t.Fatalf("a secret or an event from before sharing went out: %s", got[0])
+	if r := got[2]; r.Type != "usage" || r.Usage["runs"] != 1 || r.Usage["turns"] != 1 || r.Usage["cost_usd"] != 0.5 || r.At == "" {
+		t.Fatalf("usage: %+v", r)
 	}
-	if sent := Sent(c.WS); len(sent) != 1 {
-		t.Fatalf("copies: %v", sent)
-	} else if raw, _ := os.ReadFile(sent[0]); string(raw) != string(got[0]) {
-		t.Fatal("the copy differs from what was sent")
+	for _, b := range raw {
+		if strings.Contains(string(b), leaks[0].secret) || strings.Contains(string(b), "before sharing") {
+			t.Fatalf("a secret or an event from before sharing went out: %s", b)
+		}
 	}
-	if res, _ := m.Send(); res != "nothing new" || len(got) != 1 {
-		t.Fatalf("second send: %q, %d batches", res, len(got))
+	copies(t, c.WS, raw)
+	if res, _ := m.Send(); res != "nothing new" || requests(e) != 3 {
+		t.Fatalf("second send: %q, %d requests", res, requests(e))
 	}
 }
 
-func TestUnreachableKeepsTheBatch(t *testing.T) {
-	c := open(t, func(cfg *core.Config) {
-		cfg.SetShare(true)
-		cfg.ShareURL, cfg.Share = "http://127.0.0.1:1/report", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
-	})
+func TestUnreachableKeepsTheReports(t *testing.T) {
+	c := sharing(t, "http://127.0.0.1:1/report", 1)
 	c.J.MustAppend("alert.raised", map[string]string{"kind": "quiet", "text": "x"})
-	Note(c.WS, Failure{Kind: "doctor", Text: "✗ sandbox: no userns"})
 	m := &Module{C: c}
-	if res, err := m.Send(); err != nil || !strings.Contains(res, "try again") || len(Sent(c.WS)) != 0 {
-		t.Fatalf("unreachable: %q %v", res, err)
+	if res, err := m.Send(); err != nil || !strings.Contains(res, "2 wait for the next run") || len(Sent(c.WS)) != 0 || len(Waiting(c.WS)) != 2 {
+		t.Fatalf("unreachable: %q %v, %d waiting", res, err, len(Waiting(c.WS)))
 	}
-	if p, _, _ := m.Build(c.WS.LoadConfig()); len(p.Failures) != 2 {
-		t.Fatalf("the batch should still hold the alert and the doctor failure: %+v", p.Failures)
-	}
-}
-
-func TestSizeCap(t *testing.T) {
-	p := Payload{}
-	for i := 0; i < maxFailures; i++ {
-		p.Failures = append(p.Failures, Failure{Text: strings.Repeat("x", maxText), Excerpt: strings.Repeat("y", maxExcerpt)})
-	}
-	if raw := encode(&p); len(raw) > maxBytes || len(p.Failures) == 0 {
-		t.Fatalf("%d bytes, %d failures", len(raw), len(p.Failures))
+	e := contracttest.New(t)
+	cfg := c.WS.LoadConfig()
+	cfg.ShareURL = e.URL
+	c.WS.SaveConfig(cfg)
+	if res, _ := m.Send(); res != "sent 2, refused 0" || requests(e) != 2 || len(Waiting(c.WS)) != 0 {
+		t.Fatalf("next run: %q, %d requests", res, requests(e))
 	}
 }
 
-// sharing opens a core with sharing on since a minute ago and one doctor
-// failure waiting.
-func sharing(t *testing.T, url string) *core.Core {
-	c := open(t, func(cfg *core.Config) {
-		cfg.SetShare(true)
-		cfg.ShareURL, cfg.Share = url, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	})
-	Note(c.WS, Failure{Kind: "doctor", Text: "A"})
-	return c
+// A 400 drops the report for good; a 429 keeps it and the rest for the next
+// run.
+func TestAnswers(t *testing.T) {
+	e := contracttest.New(t)
+	e.Answer = func(n int) int {
+		if code, ok := map[int]int{0: 400, 2: 429}[n]; ok {
+			return code
+		}
+		return 202
+	}
+	c := sharing(t, e.URL, 4)
+	m := &Module{C: c}
+	if res, _ := m.Send(); res != "sent 1, refused 1; "+e.URL+" answered 429; 2 wait for the next run" || len(Waiting(c.WS)) != 2 {
+		t.Fatalf("first run: %q, %d waiting", res, len(Waiting(c.WS)))
+	}
+	if res, _ := m.Send(); res != "sent 2, refused 0" || len(Waiting(c.WS)) != 0 {
+		t.Fatalf("second run: %q", res)
+	}
+	raw, got := e.Got()
+	if len(got) != 5 || got[0].Message != "check 0" || got[2].Message != "check 2" || string(raw[3]) != string(raw[2]) || got[4].Message != "check 3" {
+		t.Fatalf("want check 0, 1, 2, then 2 again and 3: %+v", got)
+	}
+	copies(t, c.WS, append(raw[:2:2], raw[3:]...)) // the 429'd copy is gone
+	if res, _ := m.Send(); res != "nothing new" {
+		t.Fatalf("the refused report came back: %q", res)
+	}
 }
 
-// pending is how many doctor failures still wait in the outbox.
-func pending(t *testing.T, c *core.Core) int {
-	p, _, _ := (&Module{C: c}).Build(c.WS.LoadConfig())
-	return len(p.Failures)
+// A run sends at most 25: the newest failures, then a usage report that
+// counts the rest.
+func TestCap(t *testing.T) {
+	e := contracttest.New(t)
+	c := sharing(t, e.URL, 30)
+	if res, _ := (&Module{C: c}).Send(); res != "sent 25, refused 0" {
+		t.Fatalf("send: %q", res)
+	}
+	_, got := e.Got()
+	if got[0].Message != "check 6" || got[23].Message != "check 29" || got[24].Type != "usage" || got[24].Usage["failures_dropped"] != 6 {
+		t.Fatalf("first %+v, last %+v", got[0], got[24])
+	}
+}
+
+// What the Hive makes fits the contract's patterns whatever it starts from.
+func TestFieldsFitTheContract(t *testing.T) {
+	var cfg core.Config
+	cfg.SetShare(true)
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`).MatchString(cfg.InstallID) {
+		t.Fatalf("install id %q", cfg.InstallID)
+	}
+	defer func(v string) { core.Version = v }(core.Version)
+	for in, want := range map[string]string{"0.0.0-dev": "0.0.0-dev", "1.2.0+dirty build/x": "1.2.0+dirty-build-x", "": "0", strings.Repeat("9", 40): strings.Repeat("9", 32)} {
+		if core.Version = in; Version() != want {
+			t.Errorf("version %q became %q, want %q", in, Version(), want)
+		}
+	}
+	for f, want := range map[Failure]string{{Kind: "run-error", Role: "Lead Dev"}: "run-error:lead-dev", {Kind: "Ünï"}: "-n-", {}: "unknown"} {
+		if got := failure(cfg, f, "").Kind; got != want {
+			t.Errorf("kind %+v became %q, want %q", f, got, want)
+		}
+	}
 }
 
 // A config that can't be read as on, or has no install id, sends nothing.
@@ -241,34 +302,29 @@ func TestOnlyAValidOptInSends(t *testing.T) {
 }
 
 // A malformed address or a copy that can't be kept fails the job and keeps
-// the batch.
-func TestBrokenSendKeepsTheBatch(t *testing.T) {
-	c := sharing(t, "http://%")
-	if _, err := (&Module{C: c}).Send(); err == nil || pending(t, c) != 1 {
-		t.Fatalf("malformed url: %v, %d pending", err, pending(t, c))
+// the report.
+func TestBrokenSendKeepsTheReport(t *testing.T) {
+	c := sharing(t, "http://%", 1)
+	if _, err := (&Module{C: c}).Send(); err == nil || len(Waiting(c.WS)) != 1 {
+		t.Fatalf("malformed url: %v, %d waiting", err, len(Waiting(c.WS)))
 	}
-	hits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
-	defer srv.Close()
-	c = sharing(t, srv.URL)
+	e := contracttest.New(t)
+	c = sharing(t, e.URL, 1)
 	os.WriteFile(filepath.Join(Dir(c.WS), "sent"), nil, 0o600)
-	if _, err := (&Module{C: c}).Send(); err == nil || hits != 0 || pending(t, c) != 1 {
-		t.Fatalf("no copy: %v, %d requests, %d pending", err, hits, pending(t, c))
+	if _, err := (&Module{C: c}).Send(); err == nil || requests(e) != 0 || len(Waiting(c.WS)) != 1 {
+		t.Fatalf("no copy: %v, %d requests, %d waiting", err, requests(e), len(Waiting(c.WS)))
 	}
 }
 
-// A doctor failure noted while a batch is on its way waits for the next one.
+// A doctor failure noted while a run is sending waits for the next one.
 func TestNotedDuringSendWaits(t *testing.T) {
-	var c *core.Core
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		Note(c.WS, Failure{Kind: "doctor", Text: "B"})
-	}))
-	defer srv.Close()
-	c = sharing(t, srv.URL)
+	e := contracttest.New(t)
+	c := sharing(t, e.URL, 1)
+	e.Answer = func(int) int { Note(c.WS, Failure{Kind: "doctor", Text: "B"}); return 202 }
 	if res, err := (&Module{C: c}).Send(); err != nil || len(Sent(c.WS)) != 1 {
 		t.Fatalf("send: %q %v", res, err)
 	}
-	if p, _, _ := (&Module{C: c}).Build(c.WS.LoadConfig()); len(p.Failures) != 1 || p.Failures[0].Text != "B" {
-		t.Fatalf("want B waiting, got %+v", p.Failures)
+	if fails, _, _, _ := (&Module{C: c}).Build(c.WS.LoadConfig()); len(fails) != 1 || fails[0].Message != "B" {
+		t.Fatalf("want B waiting, got %+v", fails)
 	}
 }

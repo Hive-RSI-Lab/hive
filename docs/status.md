@@ -1,7 +1,7 @@
 # Status - 2026-10-22
 
 Done:
-- Opt-in sharing of failures and usage with the developer ([report.md](report.md)): asked by the installer (from the terminal, `HIVE_SHARE=yes|no` ahead of time, no without a terminal) or else at first run, off unless yes; scrubbed on the machine; `hive report`, Settings. Unit (scrubber table, send/skip/unreachable/size cap) and e2e `TestReportSharing` (local server: off sends nothing, one blocked task sends one batch).
+- Opt-in sharing of failures and usage with the developer ([report.md](report.md)): asked by the installer (from the terminal, `HIVE_SHARE=yes|no` ahead of time, no without a terminal) or else at first run, off unless yes; scrubbed on the machine; `hive report`, Settings. Unit (scrubber table, one report per failure plus usage, the 25 cap, 400 dropped, 429 and unreachable kept, field patterns) and e2e `TestReportSharing` (local endpoint that checks the contract: off sends nothing, one blocked task sends one failure and one usage report).
 - Full build per docs/spec.md, including milestone 6: risk tiers T1-T3, the warden, the tribunal and the always-the-person ceiling enforced at the point of effect (risk.md).
 - Gate: the change classifier reads diffs with `--no-renames`, so moving a protected file out is protected; an emptied test command on main is red once the project has run one.
 - Linux sandbox on stock Ubuntu 23.10+ (`apparmor_restrict_unprivileged_userns=1`): the same mounts, tools and egress run under bubblewrap; WSL keeps the build's own namespaces.
@@ -19,7 +19,7 @@ Done:
 - CI green on Windows, Ubuntu and macOS (vet, unit, e2e). Claude Code inside the WSL sandbox verified up to the API (invalid token → 401).
 
 Not verified:
-- Sharing against the real endpoint (https://hive.ihsan.cc/api/report), which is built separately; only a local server is exercised.
+- Sharing against the live endpoint (https://hive-api.ihsan.cc/v1/report) is probed by hand, one report; the tests use a local endpoint that checks the same contract.
 - The tribunal with real models under bubblewrap: `TestLiveTribunal` passed on the tower bare (three models approved, the majority ran the warden's script). Under bubblewrap no tribunal formed, because the ask was clipped at 120 characters and a sandboxed worker read the hidden fixture as already gone; both are fixed (the whole ask reaches the agents, and the worker role says outside paths are hidden), and the live probes now run sandboxed when the sandbox works. Re-run under bubblewrap. Injection resistance by a real model is untested.
 - The bubblewrap path live: `TestProbeBothPaths` (non-short, `internal/sandbox`) runs `hive sandbox-probe` under each path, but skips both inside a nested sandbox. Run it on a stock Ubuntu host.
 - Approved steps on Windows: `execute` runs them with Git for Windows' `sh`, but only the three-system CI run exercises it, and a timeout there ends `sh` and not its children.

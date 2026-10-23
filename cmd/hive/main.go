@@ -34,7 +34,7 @@ const usage = `hive: a small team of AI agents working on your projects.
   hive answer <id> <opt>   answer something waiting on you
   hive login               log in to Claude Code and GitHub with their own logins
   hive doctor [--bare]     check the install; --bare opts into unsandboxed agents
-  hive report [on|off|show|send]  sharing failures with the developer: state, switch, last batch, send now
+  hive report [on|off|show|send]  sharing failures with the developer: state, switch, last report, send now
   hive update              install the newest release
   hive shutdown            stop the Hive (running agents finish their turn)
   hive uninstall           remove autostart and the binary's record; leaves your folder

@@ -1,7 +1,8 @@
 // Package report shares an install's failures and usage with the Hive's
 // developer, only when the person has said yes. It reads the journal, scrubs
-// secrets on this machine, sends one batch to the configured address and keeps
-// a copy of every batch it sent. The payload is docs/report.md.
+// secrets on this machine, sends one usage report and one report per failure
+// to the configured address and keeps a copy of every report sent. The
+// contract and the client's behaviour are docs/report.md.
 package report
 
 import (
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -20,42 +22,29 @@ import (
 )
 
 // DefaultURL receives reports unless the config names another.
-const DefaultURL = "https://hive.ihsan.cc/api/report"
+const DefaultURL = "https://hive-api.ihsan.cc/v1/report"
 
-// Size caps, as docs/report.md states them.
+// Caps, as docs/report.md states them.
 const (
-	Schema      = 1
-	maxFailures = 50
-	maxText     = 2000
-	maxExcerpt  = 4000
-	maxBytes    = 256 << 10
+	maxPerRun  = 25 // the endpoint takes 30 an hour from one install; the job runs every 6h
+	maxText    = 2000
+	maxExcerpt = 4000
 )
 
-// Payload is one batch.
-type Payload struct {
-	Schema   int       `json:"schema"`
-	Install  string    `json:"install_id"`
-	Sent     time.Time `json:"sent_at"`
-	From     time.Time `json:"from"`
-	To       time.Time `json:"to"`
-	Version  string    `json:"version"`
-	OS       string    `json:"os"`
-	Arch     string    `json:"arch"`
-	Harness  string    `json:"harness"`
-	Usage    Usage     `json:"usage"`
-	Failures []Failure `json:"failures"`
+// Report is one request body, a usage report or one failure.
+type Report struct {
+	Install string             `json:"install"`
+	Version string             `json:"version"`
+	Type    string             `json:"type"` // usage | failure
+	Kind    string             `json:"kind,omitempty"`
+	OS      string             `json:"os,omitempty"`
+	At      string             `json:"at,omitempty"`
+	Message string             `json:"message,omitempty"`
+	Log     string             `json:"log,omitempty"`
+	Usage   map[string]float64 `json:"usage,omitempty"`
 }
 
-// Usage counts what happened in the batch's period.
-type Usage struct {
-	Runs    int     `json:"runs"`
-	Turns   int     `json:"turns"`
-	Merges  int     `json:"merges"`
-	Reverts int     `json:"reverts"`
-	CostUSD float64 `json:"cost_usd"`
-}
-
-// Failure is one thing that went wrong.
+// Failure is one thing that went wrong, before it becomes a report.
 type Failure struct {
 	Kind    string    `json:"kind"` // task-blocked | task-stopped | run-error | alert | crash | doctor
 	At      time.Time `json:"at"`
@@ -67,12 +56,14 @@ type Failure struct {
 // Module sends reports.
 type Module struct{ C *core.Core }
 
-// Dir holds the copies of what was sent and doctor failures still to send.
+// Dir holds the copies of what was sent, the reports waiting to go and
+// doctor failures still to build.
 func Dir(ws core.Workspace) string { return filepath.Join(ws.Hive(), "reports") }
 
-func outbox(ws core.Workspace) string { return filepath.Join(Dir(ws), "outbox.jsonl") }
+func outbox(ws core.Workspace) string  { return filepath.Join(Dir(ws), "outbox.jsonl") }
+func pending(ws core.Workspace) string { return filepath.Join(Dir(ws), "pending.jsonl") }
 
-// Note keeps a failure seen outside the daemon (the doctor) for the next batch.
+// Note keeps a failure seen outside the daemon (the doctor) for the next run.
 func Note(ws core.Workspace, f Failure) {
 	if _, on := ws.LoadConfig().Sharing(); on {
 		f.At = time.Now().UTC()
@@ -88,8 +79,9 @@ func URL(cfg core.Config) string {
 	return DefaultURL
 }
 
-// Send builds and sends one batch; it is the report.send job. It never fails
-// the Hive: an unreachable address leaves the batch for next time.
+// Send is the report.send job: it queues what the journal holds since the
+// last run, then sends the queue one report at a time. It never fails the
+// Hive: an unreachable address or a 429 leaves the rest for next time.
 func (m *Module) Send() (string, error) {
 	cfg := m.C.WS.LoadConfig()
 	if _, on := cfg.Sharing(); !on {
@@ -98,38 +90,112 @@ func (m *Module) Send() (string, error) {
 	if cfg.InstallID == "" {
 		return "sharing has no install id; `" + core.Cmd + " report on` makes one", nil
 	}
-	p, seq, read := m.Build(cfg)
-	if p.Usage == (Usage{}) && len(p.Failures) == 0 {
+	ws := m.C.WS
+	fails, use, seq, read := m.Build(cfg)
+	queue := Waiting(ws)
+	if len(fails) > 0 || nonzero(use.Usage) {
+		// The newest reports fit the cap, with room for the usage report,
+		// which counts the failures that didn't.
+		queue = append(queue, fails...)
+		if over := len(queue) + 1 - maxPerRun; over > 0 {
+			for _, r := range queue[:over] {
+				if r.Type == "failure" {
+					use.Usage["failures_dropped"]++
+				}
+			}
+			queue = queue[over:]
+		}
+		if nonzero(use.Usage) {
+			queue = append(queue, use)
+		}
+		// The queue is kept before the journal is marked, so a report is
+		// built once.
+		if err := save(ws, queue); err != nil {
+			return "", fmt.Errorf("keeping the reports: %v", err)
+		}
+		trim(outbox(ws), read)
+		m.C.J.MustAppend("report.queued", map[string]any{"seq": seq, "reports": len(queue)})
+	}
+	if len(queue) == 0 {
 		return "nothing new", nil
 	}
-	raw := encode(&p)
-	req, err := http.NewRequest("POST", URL(cfg), bytes.NewReader(raw))
-	if err != nil {
-		return "", fmt.Errorf("share_url: %v", err)
+	run, sent, refused := time.Now().UTC().Format("060102-150405.000000000"), 0, 0 // names sort in send order
+	for i, r := range queue {
+		raw, _ := json.Marshal(r)
+		req, err := http.NewRequest("POST", URL(cfg), bytes.NewReader(raw))
+		if err != nil {
+			return "", fmt.Errorf("share_url: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "hive/"+core.Version)
+		// The copy is kept before the report leaves, so nothing goes out
+		// unrecorded.
+		name := filepath.Join(Dir(ws), "sent", fmt.Sprintf("%s-%02d.json", run, i))
+		if err := core.WriteFileAtomic(name, raw, 0o600); err != nil {
+			save(ws, queue[i:])
+			return "", fmt.Errorf("keeping a copy of the report: %v", err)
+		}
+		why := "couldn't reach " + URL(cfg)
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		if err == nil {
+			resp.Body.Close()
+			why = fmt.Sprintf("%s answered %d", URL(cfg), resp.StatusCode)
+		}
+		switch {
+		case err == nil && resp.StatusCode/100 == 2:
+			sent++
+		case err == nil && dropped(resp.StatusCode):
+			refused++ // the endpoint will never take it; the copy shows what it was
+		default:
+			os.Remove(name)
+			save(ws, queue[i:])
+			return fmt.Sprintf("sent %d, refused %d; %s; %d wait for the next run", sent, refused, why, len(queue)-i), nil
+		}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "hive/"+core.Version)
-	// The copy is kept before the batch leaves, so nothing goes out unrecorded.
-	name := filepath.Join(Dir(m.C.WS), "sent", core.NewID()+".json")
-	if err := core.WriteFileAtomic(name, raw, 0o600); err != nil {
-		return "", fmt.Errorf("keeping a copy of the batch: %v", err)
-	}
-	res := "couldn't reach " + URL(cfg) + "; will try again"
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	if err == nil {
-		resp.Body.Close()
-		res = fmt.Sprintf("%s answered %d; will try again", URL(cfg), resp.StatusCode)
-	}
-	if err != nil || resp.StatusCode/100 != 2 {
-		os.Remove(name)
-		return res, nil
-	}
-	trim(outbox(m.C.WS), read)
-	m.C.J.MustAppend("report.sent", map[string]any{"seq": seq, "file": filepath.Base(name), "failures": len(p.Failures)})
-	return fmt.Sprintf("sent %d failures", len(p.Failures)), nil
+	save(ws, nil)
+	return fmt.Sprintf("sent %d, refused %d", sent, refused), nil
 }
 
-// trim drops the first n bytes of the outbox, the part a batch carried, and
+// dropped says the endpoint refused a report for good: not the schema, no
+// length, too large, not JSON.
+func dropped(code int) bool { return code == 400 || code == 411 || code == 413 || code == 415 }
+
+func nonzero(u map[string]float64) bool {
+	for _, v := range u {
+		if v != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Waiting lists the reports queued for the next send.
+func Waiting(ws core.Workspace) []Report {
+	var q []Report
+	core.ReadJSONL(pending(ws), func(line []byte) {
+		var r Report
+		if json.Unmarshal(line, &r) == nil {
+			q = append(q, r)
+		}
+	})
+	return q
+}
+
+// save replaces the queue with q.
+func save(ws core.Workspace, q []Report) error {
+	if len(q) == 0 {
+		os.Remove(pending(ws))
+		return nil
+	}
+	var b bytes.Buffer
+	for _, r := range q {
+		raw, _ := json.Marshal(r)
+		b.Write(append(raw, '\n'))
+	}
+	return core.WriteFileAtomic(pending(ws), b.Bytes(), 0o600)
+}
+
+// trim drops the first n bytes of the outbox, the part a run queued, and
 // keeps what was noted since.
 func trim(path string, n int) {
 	raw, _ := os.ReadFile(path)
@@ -140,48 +206,71 @@ func trim(path string, n int) {
 	core.WriteFileAtomic(path, raw[n:], 0o600)
 }
 
-// encode marshals p, dropping the newest failures until it fits the cap.
-func encode(p *Payload) []byte {
-	for {
-		raw, _ := json.Marshal(p)
-		if len(raw) <= maxBytes || len(p.Failures) == 0 {
-			return raw
-		}
-		p.Failures = p.Failures[:len(p.Failures)-1]
+var (
+	notVersion = regexp.MustCompile(`[^A-Za-z0-9._+-]+`)
+	notKind    = regexp.MustCompile(`[^a-z0-9_.:-]+`)
+)
+
+// clean replaces what the pattern refuses with '-' and clips to n bytes (the
+// result is ASCII); empty becomes or.
+func clean(s string, not *regexp.Regexp, n int, or string) string {
+	s = not.ReplaceAllString(s, "-")
+	if len(s) > n {
+		s = s[:n]
 	}
+	if s == "" {
+		return or
+	}
+	return s
 }
 
-// Build reads the journal since the last batch, from when sharing was turned
-// on, and returns the batch, the last event seq it covers and how many bytes
-// of the outbox it read.
-func (m *Module) Build(cfg core.Config) (Payload, int64, int) {
+// Version is core.Version as the contract allows it.
+func Version() string { return clean(core.Version, notVersion, 32, "0") }
+
+// failure turns f into a report; the role, if any, follows the kind after ':'.
+func failure(cfg core.Config, f Failure, root string) Report {
+	kind := f.Kind
+	if f.Role != "" {
+		kind += ":" + f.Role
+	}
+	return Report{Install: cfg.InstallID, Version: Version(), Type: "failure", Kind: clean(strings.ToLower(kind), notKind, 64, "unknown"),
+		OS: runtime.GOOS + "/" + runtime.GOARCH, At: f.At.UTC().Format(time.RFC3339),
+		Message: core.Clip(Scrub(f.Text, root), maxText), Log: core.Clip(Scrub(f.Excerpt, root), maxExcerpt)}
+}
+
+// Build reads the journal since the last run that queued reports, from when
+// sharing was turned on, and returns one report per failure (oldest first),
+// the usage report, the last event seq it covers and how many bytes of the
+// outbox it read.
+func (m *Module) Build(cfg core.Config) ([]Report, Report, int64, int) {
 	since, _ := cfg.Sharing()
-	p := Payload{Schema: Schema, Install: cfg.InstallID, Sent: time.Now().UTC(), Version: core.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Harness: cfg.Harness, Failures: []Failure{}}
+	use := map[string]float64{"runs": 0, "turns": 0, "merges": 0, "reverts": 0, "cost_usd": 0}
+	var fails []Failure
+	var from, to time.Time
 	var last, seq int64
 	roles := map[string]string{}
 	stages := map[string]string{}
 	running := false
 	var events []core.Event
 	m.C.J.Replay(func(e core.Event) {
-		if e.Kind == "report.sent" {
+		if e.Kind == "report.queued" {
 			var s struct{ Seq int64 }
 			e.Decode(&s)
 			last = s.Seq
 		}
 		events = append(events, e)
 	})
-	root := m.C.WS.Root
 	add := func(at time.Time, kind, role, text, excerpt string) {
-		p.Failures = append(p.Failures, Failure{Kind: kind, At: at, Role: role, Text: core.Clip(Scrub(text, root), maxText), Excerpt: core.Clip(Scrub(excerpt, root), maxExcerpt)})
+		fails = append(fails, Failure{Kind: kind, At: at, Role: role, Text: text, Excerpt: excerpt})
 	}
 	for _, e := range events {
 		seq = e.Seq
 		fresh := e.Seq > last && !e.At.Before(since)
-		if fresh && p.From.IsZero() {
-			p.From = e.At
+		if fresh && from.IsZero() {
+			from = e.At
 		}
 		if fresh {
-			p.To = e.At
+			to = e.At
 		}
 		switch e.Kind {
 		case "run.created":
@@ -189,7 +278,7 @@ func (m *Module) Build(cfg core.Config) (Payload, int64, int) {
 			e.Decode(&r)
 			roles[r.ID] = r.Role
 			if fresh {
-				p.Usage.Runs++
+				use["runs"]++
 			}
 		case "run.turn_ended":
 			var t struct {
@@ -205,9 +294,9 @@ func (m *Module) Build(cfg core.Config) (Payload, int64, int) {
 			if !fresh {
 				continue
 			}
-			p.Usage.Turns++
+			use["turns"]++
 			if t.Result != nil {
-				p.Usage.CostUSD += t.Result.Cost
+				use["cost_usd"] += t.Result.Cost
 			}
 			if t.Status == core.StatusParked && (t.Result == nil || t.Result.IsError && !t.Result.Limited) {
 				text := ""
@@ -229,9 +318,9 @@ func (m *Module) Build(cfg core.Config) (Payload, int64, int) {
 			}
 			switch t.Stage {
 			case "merged":
-				p.Usage.Merges++
+				use["merges"]++
 				if t.Kind == "revert" {
-					p.Usage.Reverts++
+					use["reverts"]++
 				}
 			case "blocked", "stopped":
 				var log []string
@@ -263,14 +352,20 @@ func (m *Module) Build(cfg core.Config) (Payload, int64, int) {
 			add(f.At, f.Kind, "", f.Text, f.Excerpt)
 		}
 	}
-	sort.SliceStable(p.Failures, func(i, j int) bool { return p.Failures[i].At.Before(p.Failures[j].At) })
-	if len(p.Failures) > maxFailures {
-		p.Failures = p.Failures[len(p.Failures)-maxFailures:]
+	sort.SliceStable(fails, func(i, j int) bool { return fails[i].At.Before(fails[j].At) })
+	reports := []Report{}
+	for _, f := range fails {
+		reports = append(reports, failure(cfg, f, m.C.WS.Root))
 	}
-	return p, seq, len(box)
+	u := Report{Install: cfg.InstallID, Version: Version(), Type: "usage", OS: runtime.GOOS + "/" + runtime.GOARCH, Usage: use}
+	if !to.IsZero() {
+		u.At = to.UTC().Format(time.RFC3339)
+		u.Message = fmt.Sprintf("harness %s; events from %s to %s", cfg.Harness, from.UTC().Format(time.RFC3339), u.At)
+	}
+	return reports, u, seq, len(box)
 }
 
-// Sent lists the copies of sent batches, oldest first.
+// Sent lists the copies of sent reports, oldest first.
 func Sent(ws core.Workspace) []string {
 	files, _ := filepath.Glob(filepath.Join(Dir(ws), "sent", "*.json"))
 	sort.Strings(files)

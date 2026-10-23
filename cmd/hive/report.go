@@ -34,7 +34,7 @@ func askShare(ws core.Workspace) error {
 	return setShare(ws, strings.HasPrefix(strings.ToLower(setup.Prompt("\n"+fmt.Sprintf(shareQuestion, core.Cmd), "n")), "y"))
 }
 
-// cmdReport shows what's shared, turns it on or off, prints the last batch
+// cmdReport shows what's shared, turns it on or off, prints the last report
 // sent, or sends one now. `asked` exits 0 once the person has answered; the
 // installers use it so a reinstall doesn't ask again.
 func cmdReport(args []string) int {
@@ -93,7 +93,7 @@ func cmdReport(args []string) int {
 		fmt.Printf("Sharing failures and usage with %s since %s (install %s).\n", report.URL(cfg), since.Format("2006-01-02 15:04"), cfg.InstallID)
 	}
 	if sent := report.Sent(ws); len(sent) > 0 {
-		fmt.Printf("%d batches sent; copies in %s, the last is `%s report show`.\n", len(sent), filepath.Dir(sent[0]), core.Cmd)
+		fmt.Printf("%d reports sent; copies in %s, the last is `%s report show`.\n", len(sent), filepath.Dir(sent[0]), core.Cmd)
 	}
 	return 0
 }
