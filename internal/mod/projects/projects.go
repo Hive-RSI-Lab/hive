@@ -12,6 +12,7 @@ import (
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 	"github.com/ihsan-sa/hive-standalone-build/internal/demo"
+	"github.com/ihsan-sa/hive-standalone-build/internal/harness"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/improve"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
@@ -34,7 +35,7 @@ func New(c *core.Core, ch *chat.Module, w *work.Module, im *improve.Module) *Mod
 	m := &Module{C: c, Chat: ch, Work: w, Improve: im, retry: map[string]time.Time{}, lastErr: map[string]string{}}
 	ops := c.Runs.Ops()
 	ops.Register(core.Op{Name: "create_project", Roles: []string{"lead"}, Help: `{"name","repo","description","goals","isolated","self"} (self: the Hive's own code, in the person's fork of it)`, Fn: m.opCreate})
-	ops.Register(core.Op{Name: "status", Help: `{} -> projects, work in flight, scores, what waits on the person, the live config`, Fn: func(core.Run, json.RawMessage) (any, error) { return m.Status(), nil }})
+	ops.Register(core.Op{Name: "status", Help: `{} -> projects, work in flight, scores, what waits on the person, the live settings (models, autonomy, schedules)`, Fn: func(core.Run, json.RawMessage) (any, error) { return m.Status(), nil }})
 	return m
 }
 
@@ -243,5 +244,28 @@ func (m *Module) Status() map[string]any {
 	for _, a := range m.C.Person.Open() {
 		waiting = append(waiting, a.Title)
 	}
-	return map[string]any{"projects": ps, "waiting_on_person": waiting, "config": m.C.WS.LoadConfig()}
+	return map[string]any{"projects": ps, "waiting_on_person": waiting, "config": View(m.C.WS.LoadConfig())}
+}
+
+// ConfigView is the part of the config every agent may read, so it can say
+// how the Hive is set; everything else (the forge, the floor, egress, other
+// projects' settings) stays hidden, including any field added later.
+type ConfigView struct {
+	Autonomy       int                 `json:"autonomy"`
+	Harness        string              `json:"harness"`
+	Model          string              `json:"model"`
+	LeadModel      string              `json:"lead_model"`
+	ReviewerModel  string              `json:"reviewer_model"`
+	TribunalModels []core.TribunalSeat `json:"tribunal_models"`
+	ModelChoices   []string            `json:"model_choices"`
+	Schedules      map[string]string   `json:"schedules"`
+	ReviewRounds   int                 `json:"review_rounds"`
+	PlateauMerges  int                 `json:"plateau_merges"`
+	AutoUpdate     bool                `json:"auto_update"`
+}
+
+// View is c as agents see it.
+func View(c core.Config) ConfigView {
+	return ConfigView{c.Autonomy, c.Harness, c.Model, c.LeadModel, c.ReviewerModel, c.TribunalModels,
+		append(harness.Models(c.Harness), c.ModelChoices...), c.Schedules, c.ReviewRounds, c.PlateauMerges, c.AutoUpdate}
 }
