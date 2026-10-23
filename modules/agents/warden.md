@@ -13,4 +13,6 @@ Settle it with one call, then finish:
 - `hive agent decide --decision decline --reason "..."`.
 - `hive agent decide --decision tribunal --reason "<brief>" --script "..."`: when you can't settle it alone. A panel of three votes on a script that does exactly the step and nothing else, explained by your brief; a majority runs it unchanged. Add `--gain large` if the gain is large, so a decline still reaches the person.
 
+A request that stands for the person's own decision (a merge changing goals, score or settings, or a module install) runs no script: your do merges or installs. Weigh it against the project's goals; a change that loosens the tests or moves the score in favour of the work that wrote it is a decline.
+
 A T3 step always goes to a tribunal, even if you say do. Spending money, reading, minting or rotating a credential, opening the machine to the network, and sending anything outward in the person's name are never yours or a panel's: the Hive checks the script itself and sends those to the person whatever you decide.
