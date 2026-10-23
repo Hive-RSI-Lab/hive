@@ -91,23 +91,97 @@ func TestProbeBothPaths(t *testing.T) {
 	t.Logf("%d of 2 sandbox paths ran on this host", ran)
 }
 
-// A python installed outside the system dirs is bound read-only at its own
-// path, install and all, and found by name inside after the Hive's dirs.
+// A uv python under the home is bound read-only at its own install, not at
+// ~/.local, and found by name inside right after the Hive's dirs.
 func TestHostInterpreterReachesInside(t *testing.T) {
-	inst := filepath.Join(t.TempDir(), "cpython")
-	os.MkdirAll(filepath.Join(inst, "bin"), 0o755)
-	os.WriteFile(filepath.Join(inst, "bin", "python3"), []byte("#!/bin/sh\n"), 0o755)
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("PATH", filepath.Join(inst, "bin")+":/usr/bin:/bin")
+	home := t.TempDir()
+	if underSystem(home) {
+		t.Skip("the temp dir is under a system dir")
+	}
+	defer func(old []string) { interpreters = old }(interpreters)
+	interpreters = []string{"python3"}
+	inst := mkTree(t, home, ".local/share/uv/python/cpython-3.12/bin/python3", ".local/share/uv/python/cpython-3.12/lib/os.py")[0]
+	inst = filepath.Dir(filepath.Dir(inst))
+	mkTree(t, home, ".local/share/keyrings/login.keyring")
+	os.MkdirAll(filepath.Join(home, ".local/bin"), 0o755)
+	os.Symlink(filepath.Join(inst, "bin/python3"), filepath.Join(home, ".local/bin/python3"))
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", filepath.Join(home, ".local/bin")+":/usr/bin:/bin")
 	a := initArgs{Spec: Spec{Env: InsideEnv("/hive/home", false)}}
 	hostInterpreters(&a)
-	if !slices.Contains(a.Roots, inst) {
-		t.Fatalf("roots %q lack %s", a.Roots, inst)
+	if !slices.Equal(a.Roots, []string{inst}) {
+		t.Fatalf("roots %q, want only %s", a.Roots, inst)
 	}
-	if !slices.Contains(a.Spec.Env, "PATH=/hive/bin:"+filepath.Join(inst, "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin") {
-		t.Fatalf("env %q", a.Spec.Env)
+	var path []string
+	for _, kv := range a.Spec.Env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			path = filepath.SplitList(v)
+		}
+	}
+	at := slices.Index(path, filepath.Join(inst, "bin"))
+	if at < 1 || !strings.HasPrefix(path[at-1], "/hive/") || slices.Index(path, "/usr/bin") < at {
+		t.Fatalf("PATH %q: want the install right after the /hive/ dirs, before /usr/bin", path)
 	}
 	if got := strings.Join(bwrapArgs(a, "/h/hive"), " "); !strings.Contains(got, "--ro-bind "+inst+" "+inst) {
 		t.Fatalf("bwrap args lack the install:\n%s", got)
 	}
+}
+
+// No interpreter widens the bind past its own install: not /usr, the home,
+// ~/.local (keyrings) or ~/.cargo (the crates.io token), and nothing at all
+// when the home is unknown.
+func TestInstallRootNeverBindsMore(t *testing.T) {
+	home := t.TempDir()
+	secrets := mkTree(t, home, ".cargo/credentials.toml", ".cargo/lib/x", ".local/share/keyrings/login.keyring",
+		".local/lib/python3.12/site.py", "lib/x", ".tool/python3")
+	uvLocal := mkTree(t, home, ".local/bin/uv")[0]
+	uvCargo := mkTree(t, home, ".cargo/bin/uv")[0]
+	homeBin := mkTree(t, home, "bin/python3")[0]
+	for _, c := range []struct {
+		p, home, want string
+		ok            bool
+	}{
+		{"/usr/bin/python3", home, "", true},
+		{uvLocal, home, filepath.Join(home, ".local/bin"), true},
+		{uvCargo, home, filepath.Join(home, ".cargo/bin"), true},
+		{homeBin, home, filepath.Join(home, "bin"), true},
+		{secrets[5], home, "", false},
+		{uvLocal, "", "", false},
+		{uvCargo, "", "", false},
+	} {
+		got, ok := installRoot(c.p, c.home)
+		if got != c.want || ok != c.ok {
+			t.Errorf("installRoot(%s, %q) = %q, %v; want %q, %v", c.p, c.home, got, ok, c.want, c.ok)
+		}
+		for _, s := range append(secrets[:3:3], "/usr/lib/os-release") {
+			if got != "" && strings.HasPrefix(s, got+"/") {
+				t.Errorf("installRoot(%s) = %s exposes %s", c.p, got, s)
+			}
+		}
+	}
+	defer func(old []string) { interpreters = old }(interpreters)
+	interpreters = []string{"uv"}
+	t.Setenv("HOME", "")
+	t.Setenv("PATH", filepath.Join(home, ".local/bin")+":/usr/bin:/bin")
+	a := initArgs{Spec: Spec{Env: InsideEnv("/hive/home", false)}}
+	hostInterpreters(&a)
+	if len(a.Roots) != 0 || strings.Contains(strings.Join(a.Spec.Env, " "), home) {
+		t.Fatalf("with HOME unset: roots %q, env %q", a.Roots, a.Spec.Env)
+	}
+}
+
+// mkTree makes each file (and its dirs) under root and returns their paths.
+func mkTree(t *testing.T, root string, files ...string) []string {
+	var out []string
+	for _, f := range files {
+		p := filepath.Join(root, f)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, p)
+	}
+	return out
 }
