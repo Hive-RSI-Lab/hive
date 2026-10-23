@@ -69,6 +69,7 @@ type Alert struct {
 	Kind  string    `json:"kind"`
 	Text  string    `json:"text"`
 	Count int       `json:"count"`
+	Key   string    `json:"-"` // kind, project and cause: a repeat refreshes the alert
 }
 
 // ModuleView is one installed module.

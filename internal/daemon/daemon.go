@@ -150,17 +150,22 @@ func (s *server) onEvent(e core.Event) {
 	if e.Kind != "alert.raised" {
 		return
 	}
-	var a struct{ Kind, Text string }
+	var a struct{ Kind, Project, Key, Text string }
 	e.Decode(&a)
+	if a.Key == "" {
+		a.Key = a.Text
+	}
+	key := a.Kind + "\x00" + a.Project + "\x00" + a.Key
 	s.mu.Lock()
+	n := 1
 	for i := range s.alerts {
-		if s.alerts[i].Kind == a.Kind && s.alerts[i].Text == a.Text {
-			s.alerts[i].At, s.alerts[i].Count = e.At, s.alerts[i].Count+1
-			s.mu.Unlock()
-			return
+		if s.alerts[i].Key == key {
+			n += s.alerts[i].Count
+			s.alerts = append(s.alerts[:i], s.alerts[i+1:]...) // re-added below as the newest
+			break
 		}
 	}
-	s.alerts = append(s.alerts, api.Alert{At: e.At, Kind: a.Kind, Text: a.Text, Count: 1})
+	s.alerts = append(s.alerts, api.Alert{At: e.At, Kind: a.Kind, Text: a.Text, Count: n, Key: key})
 	if len(s.alerts) > 50 {
 		s.alerts = s.alerts[len(s.alerts)-50:]
 	}

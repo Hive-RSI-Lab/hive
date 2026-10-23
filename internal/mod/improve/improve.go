@@ -194,11 +194,16 @@ func (m *Module) baseline(p core.Project) {
 		return
 	}
 	m.record(ms)
-	text := "the start of " + p.Name + " has no number yet: " + core.Clip(note, 200)
-	if why := MissingTool(p.Name, note); why != "" {
-		text = why
+	kind := "test"
+	if ok {
+		kind = "score"
 	}
-	m.C.J.MustAppend("alert.raised", map[string]string{"kind": "baseline", "project": p.Name, "text": text + "; measuring again in 10 minutes"})
+	// One alert per project and cause: a repeat refreshes it, whatever the raw output.
+	text, key := "the start of "+p.Name+" has no number yet: "+core.Clip(note, 200), kind
+	if why := MissingTool(p.Name, kind, note); why != "" {
+		text, key = why, why
+	}
+	m.C.J.MustAppend("alert.raised", map[string]string{"kind": "baseline", "project": p.Name, "key": key, "text": text + "; measuring again in 10 minutes"})
 }
 
 func (m *Module) measureLoop() {
@@ -404,18 +409,25 @@ func (m *Module) Digest(since int64) string {
 	return b.String()
 }
 
-var notFound = regexp.MustCompile(`(?m)(?:^|[:\s])([^\s:]+): (?:command )?not found`)
+// notFound matches the shell's program-not-found lines (dash "sh: 1: X: not
+// found", bash "bash: line 1: X: command not found") and the line Hive's own
+// guard prints when a program lookup finds nothing.
+var notFound = regexp.MustCompile(`(?m)(?:^|\s)(?:\S*/)?(?:ba|da)?sh: (?:line )?(?:\d+: )?([^\s:]+): (?:command )?not found|hive: missing program: ([^\n]+)`)
 
-// MissingTool says in plain words which program a red check could not start,
-// or "" when the output shows no such failure. A name starting with "-" means
-// the command began with an empty program.
-func MissingTool(project, out string) string {
+// MissingTool says in plain words which program the test or score command
+// (kind) could not start, or "" when the output shows no such failure. A name
+// starting with "-" means the command began with an empty program.
+func MissingTool(project, kind, out string) string {
 	m := notFound.FindStringSubmatch(out)
 	if m == nil {
 		return ""
 	}
-	if strings.HasPrefix(m[1], "-") {
-		return "the test command for " + project + " started with no program (an interpreter variable came out empty, so no interpreter is installed), so its tests can't run"
+	so := "so " + project + "'s tests can't run"
+	if kind == "score" {
+		so = "so " + project + "'s score can't be measured"
 	}
-	return m[1] + " isn't installed, so " + project + "'s tests can't run"
+	if tool := m[1] + m[2]; !strings.HasPrefix(tool, "-") {
+		return tool + " isn't installed, " + so + "; install it where the Hive runs its checks"
+	}
+	return "the " + kind + " command for " + project + " started with no program (an interpreter variable came out empty, so the interpreter it looks for isn't installed), " + so
 }
