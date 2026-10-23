@@ -41,3 +41,6 @@
 
 ## 2026-10-23 The score is fixed before the candidate
 - Decision: a `./` file in the score command and the score's `paths` are protected like the settings, and each measurement carries the score's version (a hash of the command and those files at the measured commit); a merge whose version differs from the best kept one starts a new baseline instead of being kept or reverted against it, and a step-back seeds from and scores only under the version of the best | Why: the score runs from the checkout it measures, so a change to the score could pass as a gain, or a new scoring method be compared with old numbers (outside review, 10-23) | Tradeoff: the tests a score runs aren't covered unless listed in `paths`, and the first merge after upgrading starts a new baseline because old records have no version.
+
+## 2026-10-23 An approved script's pin covers its text, not what it calls
+- Decision: the digest stays on the script's text; the docs say so, and the warden and tribunal prompts ask for lines from agent-writable files inline or a fetch pinned by checksum | Why: an outside review found a script that calls a file the worker can still edit isn't frozen, and which files a shell script will read can't be worked out from its text, so a snapshot would be a guess | Tradeoff: the weighers carry this, not a check at the point of effect.
