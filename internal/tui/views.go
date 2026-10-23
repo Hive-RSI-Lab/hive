@@ -400,6 +400,8 @@ func (m *model) keyDetailAction(d *detail, key string) (tea.Model, tea.Cmd) {
 				allow := !contains(mod.Projects, p)
 				return m, m.post("/api/module/access", map[string]any{"module": mod.Name, "project": p, "allow": allow}, "access updated")
 			}
+		case "r":
+			return m, m.post("/api/module/review", map[string]any{"module": mod.Name}, "its code will be read again")
 		}
 	}
 	return m, nil
@@ -502,7 +504,7 @@ func (m *model) viewDetail(d *detail) []string {
 			}
 			lines = append(lines, line)
 		}
-		lines = append(lines, "", stDim.Render("space grant or remove"))
+		lines = append(lines, "", stDim.Render("space grant or remove · r read its code again"))
 		return window(lines, top+d.sel, m.bodyHeight())
 	default:
 		lines = append(lines, wrap(d.text, w)...)
