@@ -175,7 +175,7 @@ func TestWardenDoRunsExactlyItsScript(t *testing.T) {
 		t.Fatal("a second decision was taken")
 	}
 	got := g.settle(req.ID, "approved", "running")
-	if got.State != "done" || !core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.ID, "proof")) || strings.Contains(got.Output, "secret-token") {
+	if got.State != "done" || !core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.Project, req.ID, "proof")) || strings.Contains(got.Output, "secret-token") {
 		t.Fatalf("step didn't run: %+v", got)
 	}
 	if !g.told("done") {
@@ -254,7 +254,7 @@ func TestSplitPanelDeclinesAndBriefsThePerson(t *testing.T) {
 	req, _ = g.m.get(req.ID)
 	g.vote(req, "approve", "decline", "decline")
 	got := g.settle(req.ID, "tribunal")
-	if got.State != "asked" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.ID, "proof")) {
+	if got.State != "asked" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.Project, req.ID, "proof")) {
 		t.Fatalf("a split panel ran it or didn't ask: %+v", got)
 	}
 	g.c.Person.Answer(got.Ask, "run", "")
@@ -340,7 +340,7 @@ func TestSwappedScriptIsRefused(t *testing.T) {
 	g.m.save(&req)
 	g.m.execute(req.ID)
 	got, _ := g.m.get(req.ID)
-	if got.State != "failed" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.ID, "proof")) {
+	if got.State != "failed" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.Project, req.ID, "proof")) {
 		t.Fatalf("a swapped script ran: %+v", got)
 	}
 }
@@ -352,7 +352,7 @@ func TestCeilingRefusesAfterAnAllow(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := g.settle(req.ID, "approved")
-	if got.State != "asked" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.ID, "proof")) {
+	if got.State != "asked" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.Project, req.ID, "proof")) {
 		t.Fatalf("the ceiling let a money step run: %+v", got)
 	}
 	g.c.Person.Answer(got.Ask, "declined", "")
@@ -421,7 +421,7 @@ func TestTribunalMajorityStillAsksForMoney(t *testing.T) {
 	req, _ = g.m.get(req.ID)
 	g.vote(req, "approve", "approve", "approve")
 	got := g.settle(req.ID, "tribunal", "approved")
-	if got.State != "asked" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.ID, "proof")) {
+	if got.State != "asked" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.Project, req.ID, "proof")) {
 		t.Fatalf("a panel's yes ran a money step: %+v", got)
 	}
 	for _, a := range g.c.Person.Open() {
@@ -615,7 +615,7 @@ func TestFloorRaisesToThePerson(t *testing.T) {
 	if err := g.decide(req, map[string]string{"decision": "do", "reason": "fine", "script": "echo x > proof && cp new.pem old.pem"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := g.settle(req.ID, "approved"); got.State != "asked" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.ID, "proof")) {
+	if got := g.settle(req.ID, "approved"); got.State != "asked" || core.Exists(filepath.Join(g.c.WS.Hive(), "risk", req.Project, req.ID, "proof")) {
 		t.Fatalf("the floor let a warden's step run: %+v", got)
 	}
 }
@@ -655,6 +655,38 @@ func TestVoteMustBeClean(t *testing.T) {
 		if got, _ := voteOf(core.Run{Status: core.StatusDone, Structured: json.RawMessage(raw)}); got != want {
 			t.Errorf("voteOf(%s) = %s, want %s", raw, got, want)
 		}
+	}
+}
+
+// An isolated project's lead asking to install a module files the ask under
+// its project, so other projects' agents don't see its title.
+func TestModuleInstallAskCarriesTheProject(t *testing.T) {
+	g := newRig(t, 2)
+	g.c.Projects.Add(core.Project{Name: "secret", Repo: "me/secret", Isolated: true})
+	lead, err := g.c.Runs.Start(core.RunSpec{Role: "lead", Harness: "fake", Project: "secret", Isolated: true, Checkout: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.call(lead, "install_module", map[string]string{"url": t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	filed := 0
+	for _, a := range g.c.Person.Open() {
+		if a.Kind == "module" {
+			filed++
+			if a.Project != "secret" {
+				t.Errorf("the install ask is filed under %q", a.Project)
+			}
+		}
+	}
+	for _, q := range g.m.List() {
+		filed++
+		if q.Project != "secret" {
+			t.Errorf("the install request is filed under %q", q.Project)
+		}
+	}
+	if filed == 0 {
+		t.Error("the install was neither asked nor weighed")
 	}
 }
 
@@ -704,5 +736,26 @@ func TestPersonAnswersASettledAsk(t *testing.T) {
 				t.Fatalf("%s, %s: the finished worker was sent %q", route, answer, p)
 			}
 		}
+	}
+}
+
+// An isolated project's code never becomes a module every project reads, and
+// no lead installs from a project out of its reach.
+func TestModuleInstallRefusesAnIsolatedProject(t *testing.T) {
+	g := newRig(t, 2)
+	g.c.Projects.Add(core.Project{Name: "open", Repo: "me/open"})
+	g.c.Projects.Add(core.Project{Name: "secret", Repo: "me/secret", Isolated: true})
+	os.MkdirAll(g.c.WS.Project("secret"), 0o755)
+	for _, from := range []string{"secret", "open"} {
+		lead, err := g.c.Runs.Start(core.RunSpec{Role: "lead", Harness: "fake", Project: from, Isolated: from == "secret", Checkout: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.call(lead, "install_module", map[string]string{"project": "secret"}); err == nil {
+			t.Errorf("a %s lead installed the isolated project as a module", from)
+		}
+	}
+	if len(g.c.Person.Open()) != 0 || len(g.m.List()) != 0 {
+		t.Error("a refused install was still asked or weighed")
 	}
 }

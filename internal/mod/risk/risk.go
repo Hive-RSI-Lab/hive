@@ -111,6 +111,14 @@ func New(c *core.Core, mod *modules.Registry, ag *agents.Agents) *Module {
 	}
 	c.J.Replay(apply)
 	c.J.Subscribe(apply)
+	// A request's folder used to sit at risk/<id>; it now sits in its
+	// project's folder, which is covered when the project is isolated.
+	for _, r := range m.reqs {
+		if old := filepath.Join(c.WS.Hive(), "risk", r.ID); r.Project != "" && core.Exists(old) {
+			os.MkdirAll(filepath.Join(c.WS.Hive(), "risk", r.Project), 0o755)
+			os.Rename(old, filepath.Join(c.WS.Hive(), "risk", r.Project, r.ID))
+		}
+	}
 	ops := c.Runs.Ops()
 	ops.Register(core.Op{Name: "warden", Help: `{"want","why","steps","tier":"T1|T2|T3","gain":"(optional) large"} -> T1 you weigh yourself; T2 goes to a warden, T3 to a tribunal`, Fn: m.opRequest})
 	ops.Register(core.Op{Name: "decide", Roles: []string{"warden"}, Help: `{"decision":"do|safer|decline|tribunal","reason","script":"exactly what runs (do, tribunal)","gain":"(optional) large"}`, Fn: m.opDecide})
@@ -613,7 +621,7 @@ func (m *Module) execute(id string) {
 // the daemon's user and can read that user's files, so its output goes to the
 // person, never back to the agent.
 func (m *Module) run(req Request) (string, error) {
-	dir := filepath.Join(m.C.WS.Hive(), "risk", req.ID)
+	dir := filepath.Join(m.C.WS.Hive(), "risk", req.Project, req.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -681,8 +689,15 @@ func (m *Module) opInstall(r core.Run, args json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if a.Project != "" {
-		if _, ok := m.C.Projects.Get(a.Project); !ok {
+		p, ok := m.C.Projects.Get(a.Project)
+		if !ok {
 			return nil, fmt.Errorf("no project %q", a.Project)
+		}
+		if err := m.C.Runs.Walled(r, a.Project); err != nil {
+			return nil, err
+		}
+		if p.Isolated {
+			return nil, fmt.Errorf("project %q is isolated, so its code can't become a module every project's agents read", a.Project)
 		}
 		a.URL = m.C.WS.Project(a.Project)
 	}
@@ -696,7 +711,11 @@ func (m *Module) opInstall(r core.Run, args json.RawMessage) (any, error) {
 	if _, ok := m.Mod.Get(name); ok {
 		return nil, fmt.Errorf("a module named %s is already installed", name)
 	}
-	who := m.Weigh(core.Ask{Kind: "module", Ref: a.URL, From: r.ID, Project: a.Project,
+	project := a.Project // where the ask is filed: the source project, else the asker's own
+	if project == "" {
+		project = r.Project
+	}
+	who := m.Weigh(core.Ask{Kind: "module", Ref: a.URL, From: r.ID, Project: project,
 		Title:   "Install module " + name + "?",
 		Detail:  "From " + a.URL + ". It brings outside code onto this machine; agents will read and use it. The Hive clones it into .modules/" + name + ".",
 		Options: []string{"install", "decline"}})
@@ -762,7 +781,7 @@ func (m *Module) onModule(a core.Ask) {
 		return
 	}
 	var err error
-	if p, ok := m.C.Projects.Get(a.Project); ok {
+	if p, ok := m.C.Projects.Get(a.Project); ok && a.Ref == m.C.WS.Project(p.Name) {
 		_, err = m.C.Effects.Sync(p) // the host clone at main is what installs
 	}
 	mod := modules.Module{}
