@@ -747,6 +747,9 @@ func (rs *Runs) endTurn(r Run) {
 		if cur.Finish != nil {
 			account = fmt.Sprintf("status: %s\n%s\ntested: %s\nunsure: %s", cur.Finish.Status, cur.Finish.Account, cur.Finish.Tested, cur.Finish.Unsure)
 		}
+		if r.Task != "" && te.Status == StatusDone {
+			account += "\nwhere its commits go: their own pull request, task " + r.Task + "; the thread hears when it merges"
+		}
 		if p, ok := rs.Get(r.Parent); ok && (!p.Terminal() || p.Persistent) {
 			rs.Send(p.ID, fmt.Sprintf("[%s %s finished]\n%s", r.Role, r.ID, account))
 		}
@@ -892,10 +895,13 @@ func (rs *Runs) sandboxSpec(cfg Config, sb sandbox.Sandbox, h harness.Harness, r
 		mounts = append(mounts, sandbox.Mount{Host: rs.ws.Projects(), Inside: "/hive/projects"},
 			sandbox.Mount{Host: rs.ws.Hive(), Inside: "/hive/state"})
 		// Every agent reads the whole Hive but what grants access: the daemon's
-		// API token and the login pool's stored logins.
-		logins := filepath.Join(rs.ws.Hive(), "logins")
-		os.MkdirAll(logins, 0o700) // a login added mid-turn lands under the cover
-		mounts = append(mounts, sandbox.Mount{Host: logins, Inside: "/hive/state/logins", Hide: true})
+		// API token, the login pool's stored logins, and module programs' homes
+		// and logs, where a door module keeps its own service login.
+		for _, d := range []string{"logins", "modules"} {
+			dir := filepath.Join(rs.ws.Hive(), d)
+			os.MkdirAll(dir, 0o700) // one added mid-turn lands under the cover
+			mounts = append(mounts, sandbox.Mount{Host: dir, Inside: "/hive/state/" + d, Hide: true})
+		}
 		if _, err := os.Stat(rs.ws.DaemonFile()); err == nil {
 			mounts = append(mounts, sandbox.Mount{Host: rs.ws.DaemonFile(), Inside: "/hive/state/daemon.json", Hide: true})
 		}
