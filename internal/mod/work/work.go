@@ -379,18 +379,13 @@ func (m *Module) startWorker(t *Task, p core.Project) error {
 }
 
 // renderBrief is the worker's first prompt. It quotes the project's lessons so
-// an idea that was reverted isn't tried again blind. On a scored project done is
-// the score itself, so no bar the filer set can cap the work.
+// an idea that was reverted isn't tried again blind.
 func (m *Module) renderBrief(t *Task, p core.Project, base string) string {
 	cfg := m.C.Effects.Config(p, base)
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Brief: %s\n\nTask %s · project %s · issue #%d\n\n", t.Label(), t.ID, p.Name, t.Issue.Number)
 	fmt.Fprintf(&b, "## The ask\n\n%s\n\n", t.Title)
-	done := orNone(t.Done)
-	if cfg.Score != nil {
-		done = "The score, as far as you can take it."
-	}
-	fmt.Fprintf(&b, "## What done looks like\n\n%s\n\n## What's already known\n\n%s\n\n", done, orNone(t.Known))
+	fmt.Fprintf(&b, "## What done looks like\n\n%s\n\n## What's already known\n\n%s\n\n", doneFor(t, cfg.Score != nil), orNone(t.Known))
 	b.WriteString("## The project\n\n")
 	b.WriteString("- Goals: `.hive/goals.md`. Read it; report against it.\n")
 	fmt.Fprintf(&b, "- Tests: `%s`\n", orNone(cfg.Test))
@@ -867,4 +862,14 @@ func (m *Module) Retry(id string) error {
 	t.Stage, t.Worker, t.Reason, t.Failures, t.Round = StageIssued, "", "", 0, 0
 	m.save(&t, "handed to a fresh worker")
 	return nil
+}
+
+// doneFor is the done line a brief carries. On a scored project an agent's own
+// bar would cap the work, so the ask stands as done; the Hive's own setup brief
+// keeps its line.
+func doneFor(t *Task, scored bool) string {
+	if scored && t.From != "hive" {
+		return "What the ask says, as far as you can take it."
+	}
+	return orNone(t.Done)
 }

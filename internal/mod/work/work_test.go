@@ -142,8 +142,8 @@ func briefAt(t *testing.T, config string, task *Task) string {
 	return m.renderBrief(task, p, "HEAD")
 }
 
-// A scored project's worker gets the person's goal as written, and done is the
-// score, not a bar the filer set; an unscored brief keeps the filer's done.
+// A scored project's worker gets the person's goal as written, with no bar an
+// agent set; the Hive's setup brief and an unscored brief keep their done.
 func TestScoredBriefCarriesTheGoal(t *testing.T) {
 	goal := "The kernel is slow. Make it faster."
 	task := func() *Task {
@@ -152,6 +152,11 @@ func TestScoredBriefCarriesTheGoal(t *testing.T) {
 	b := briefAt(t, `{"test":"true","score":{"command":"cat s","direction":"higher"}}`, task())
 	if !strings.Contains(b, "## The ask\n\n"+goal+"\n") || strings.Contains(b, "3.139") || !strings.Contains(b, "as far as you can take it") {
 		t.Fatalf("scored brief:\n%s", b)
+	}
+	setup := task()
+	setup.From = "hive"
+	if b := briefAt(t, `{"test":"true","score":{"command":"cat s","direction":"higher"}}`, setup); !strings.Contains(b, "score above 3.139") {
+		t.Fatalf("the Hive's own setup brief lost its done line:\n%s", b)
 	}
 	b = briefAt(t, `{"test":"true"}`, task())
 	if !strings.Contains(b, "## What done looks like\n\nscore above 3.139\n") {
