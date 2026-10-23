@@ -140,6 +140,15 @@ func (m *Module) version(p core.Project, sha string, cfg core.ProjectConfig) str
 	return m.C.Effects.ScoreVersion(p, sha, *cfg.Score)
 }
 
+// versionOf is x's score version, worked out at its commit when x was
+// recorded before measurements carried one.
+func (m *Module) versionOf(p core.Project, x Measurement) string {
+	if x.Version != "" {
+		return x.Version
+	}
+	return m.version(p, x.SHA, m.C.Effects.Config(p, x.SHA))
+}
+
 func (m *Module) measured(project, sha string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -262,7 +271,7 @@ func (m *Module) afterMerge(t work.Task) {
 		best = *k.Best
 	}
 	ms := Measurement{Project: p.Name, SHA: t.MergeSHA, Task: t.ID, TestsOK: ok, Score: score, Note: note, Version: m.version(p, t.MergeSHA, cfg)}
-	if hasBest && k.Version != ms.Version {
+	if hasBest && m.versionOf(p, k) != ms.Version {
 		// The score itself changed, so this merge starts a new baseline.
 		hasBest, ms.Note = false, "the score changed, so this starts a new baseline; "+note
 	}

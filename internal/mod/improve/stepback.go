@@ -71,10 +71,11 @@ func (m *Module) saveStepBack(s StepBack) { m.C.J.MustAppend("stepback.saved", s
 
 // start is the project's first kept measure under the score that gave its
 // best: the seed every setup starts from.
-func (m *Module) start(project string) (Measurement, bool) {
-	k, _ := m.kept(project)
-	for _, x := range m.Scores(project) {
-		if x.Kept && x.Score != nil && x.Version == k.Version {
+func (m *Module) start(p core.Project) (Measurement, bool) {
+	k, _ := m.kept(p.Name)
+	v := m.versionOf(p, k)
+	for _, x := range m.Scores(p.Name) {
+		if x.Kept && x.Score != nil && m.versionOf(p, x) == v {
 			return x, true
 		}
 	}
@@ -149,7 +150,7 @@ func (m *Module) StartStepBack(p core.Project, why string) error {
 	for _, r := range m.hiveRuns(p.Name, s.Since) {
 		s.Budget += r.Cost
 	}
-	st, ok := m.start(p.Name)
+	st, ok := m.start(p)
 	if !ok {
 		return m.fail(s, "it has no score to beat")
 	}
@@ -341,7 +342,7 @@ func (m *Module) score(s StepBack, r core.Run) {
 		m.fail(s, "the experiment's score can't count: "+err.Error())
 		return
 	}
-	if k, _ := m.kept(p.Name); k.Version != m.C.Effects.ScoreVersion(p, sha, *cfg.Score) {
+	if k, _ := m.kept(p.Name); m.versionOf(p, k) != m.C.Effects.ScoreVersion(p, sha, *cfg.Score) {
 		m.fail(s, "the score changed since the experiment's start, so its number can't be compared with the Hive's best")
 		return
 	}

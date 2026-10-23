@@ -90,3 +90,20 @@ func TestChangedScoreStartsANewBaseline(t *testing.T) {
 		t.Fatal("the score's version did not change with its file")
 	}
 }
+
+// A start recorded before measurements carried a version still counts as the
+// baseline: a lower score on the next merge is reverted, not a new start.
+func TestUnversionedStartIsStillTheBaseline(t *testing.T) {
+	m, merge := scored(t)
+	m.mu.Lock()
+	for i := range m.scores["p"] {
+		m.scores["p"][i].Version = ""
+	}
+	m.mu.Unlock()
+	if ms := merge(map[string]string{"n.txt": "3\n"}); ms.Kept {
+		t.Fatalf("a fall from 5 to 3 after an unversioned start was kept: %+v", ms)
+	}
+	if b, _ := m.Best("p"); b != 5 {
+		t.Fatalf("best %v, want 5", b)
+	}
+}
