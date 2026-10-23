@@ -300,8 +300,7 @@ func (m *Module) step(t *Task) error {
 	}
 	switch t.Stage {
 	case StageNew:
-		body := fmt.Sprintf("%s\n\n**Done looks like:** %s\n\n**Already known:** %s\n\n_Filed by the Hive (%s)._", t.Title, orNone(t.Done), orNone(t.Known), t.From)
-		is, err := m.C.Effects.Forge.CreateIssue(p.Repo, t.Label(), body, marker(t.ID))
+		is, err := m.C.Effects.Forge.CreateIssue(p.Repo, t.Label(), m.issueBody(t, p), marker(t.ID))
 		if err != nil {
 			return err
 		}
@@ -376,6 +375,13 @@ func (m *Module) startWorker(t *Task, p core.Project) error {
 	t.Worker, t.Stage, t.Failures = id, StageWorking, 0
 	m.save(t, "worker "+id+" started")
 	return nil
+}
+
+// issueBody is the issue a task is filed as. Its done line follows the brief's,
+// read from the project's last synced main.
+func (m *Module) issueBody(t *Task, p core.Project) string {
+	done := doneFor(t, m.C.Effects.Config(p, "HEAD").Score != nil)
+	return fmt.Sprintf("%s\n\n**Done looks like:** %s\n\n**Already known:** %s\n\n_Filed by the Hive (%s)._", t.Title, done, orNone(t.Known), t.From)
 }
 
 // renderBrief is the worker's first prompt. It quotes the project's lessons so

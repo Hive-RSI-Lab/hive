@@ -130,6 +130,12 @@ func TestDoneProjectGone(t *testing.T) {
 
 // briefAt renders a brief for a project whose main holds config.
 func briefAt(t *testing.T, config string, task *Task) string {
+	m, p := rigAt(t, config)
+	return m.renderBrief(task, p, "HEAD")
+}
+
+// rigAt is a rig whose project's main holds config.
+func rigAt(t *testing.T, config string) (*Module, core.Project) {
 	m, _, _, p := noCommitRig(t, 0)
 	dir := m.C.WS.Project(p.Name)
 	os.MkdirAll(filepath.Join(dir, ".hive"), 0o755)
@@ -139,7 +145,7 @@ func briefAt(t *testing.T, config string, task *Task) string {
 			t.Fatal(out, err)
 		}
 	}
-	return m.renderBrief(task, p, "HEAD")
+	return m, p
 }
 
 // A scored project's worker gets the person's goal as written, with no bar an
@@ -161,5 +167,13 @@ func TestScoredBriefCarriesTheGoal(t *testing.T) {
 	b = briefAt(t, `{"test":"true"}`, task())
 	if !strings.Contains(b, "## What done looks like\n\nscore above 3.139\n") {
 		t.Fatalf("unscored brief:\n%s", b)
+	}
+	m, p := rigAt(t, `{"test":"true","score":{"command":"cat s","direction":"higher"}}`)
+	if b := m.issueBody(task(), p); strings.Contains(b, "3.139") || !strings.Contains(b, "as far as you can take it") {
+		t.Fatalf("scored issue body:\n%s", b)
+	}
+	m, p = rigAt(t, `{"test":"true"}`)
+	if b := m.issueBody(task(), p); !strings.Contains(b, "score above 3.139") {
+		t.Fatalf("unscored issue body:\n%s", b)
 	}
 }
