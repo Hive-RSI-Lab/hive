@@ -476,7 +476,20 @@ func TestScoreOf(t *testing.T) {
 			t.Errorf("scoreOf(%q) = %v, %v; want %v", c.out, v, err, c.want)
 		}
 	}
-	if _, err := scoreOf("all done\n"); err == nil {
-		t.Error("output with no number scored")
+	for _, out := range []string{
+		"all done\n",
+		"59.93\n60.1\nrun 1: ok\n",
+		"59.93\nN/A\n0\nfailed\n",
+		"59.93\ninf\nrun 1: ok\n",
+		"59.93\n+Inf\nrun 1: ok\n",
+		"59.93\nNaN\nrun 1: ok\n",
+		"59.93\n1e9\nrun 1: ok\n",
+		"score: inf\n",
+		"score: NaN\n",
+		"+Inf\n",
+	} {
+		if v, err := scoreOf(out); err == nil {
+			t.Errorf("scoreOf(%q) = %v; want no score", out, v)
+		}
 	}
 }

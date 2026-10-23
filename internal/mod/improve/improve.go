@@ -261,7 +261,7 @@ func (m *Module) noStart(p core.Project, ms Measurement) {
 	}
 	m.Chat.EnsureProject(p.Name)
 	m.Chat.Post("project:"+p.Name, "", "improve", head+" to give a starting score more than once, so the keep-or-revert loop can't judge any change. "+
-		"Look at the output below, fix the test or score command in .hive/project.json (the score is the last word of the output, or a line that is a number alone), and ask the person if you can't:\n"+core.Clip(note, 1500))
+		"Look at the output below, fix the test or score command in .hive/project.json (the score is the last word of the output, or the one line that is a number alone), and ask the person if you can't:\n"+core.Clip(note, 1500))
 }
 
 func (m *Module) measureLoop() {
