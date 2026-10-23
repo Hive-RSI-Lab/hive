@@ -343,6 +343,10 @@ func (m *model) viewDash() []string {
 			sel++
 		}
 	}
+	if m.st.Offline != "" {
+		lines = append([]string{stWarn.Render(strings.ToUpper(m.st.Offline[:1]) + m.st.Offline[1:] + "; the work picks up again on its own."), ""}, lines...)
+		sel += 2
+	}
 	if m.st.SandboxErr != "" {
 		lines = append([]string{stBad.Render("Agents can't start: " + core.Clip(m.st.SandboxErr, 200)), ""}, lines...)
 		sel += 2
