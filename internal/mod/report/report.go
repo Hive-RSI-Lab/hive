@@ -21,7 +21,8 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 )
 
-// DefaultURL receives reports unless the config names another.
+// DefaultURL receives reports unless the config names another. It is the
+// developer's live receiver; hive.ihsan.cc is the website and takes no reports.
 const DefaultURL = "https://hive-api.ihsan.cc/v1/report"
 
 // Caps, as docs/report.md states them.
