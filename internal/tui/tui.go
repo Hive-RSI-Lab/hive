@@ -345,7 +345,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case s == "" || msg.Action != tea.MouseActionPress || m.help || m.showSince:
 		case len(m.stack) > 0:
-			if top := &m.stack[len(m.stack)-1]; top.kind != "module" {
+			if top := &m.stack[len(m.stack)-1]; top.kind == "module" { // the list follows the selection
+				key := "up"
+				if s == "wheeldown" {
+					key = "down"
+				}
+				return m.keyDetailAction(top, key)
+			} else {
 				top.scroll = max(0, top.scroll+map[string]int{"wheelup": -3, "wheeldown": 3}[s])
 			}
 		case m.section != secChats:

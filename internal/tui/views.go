@@ -811,6 +811,9 @@ func (m *model) saveSetting(v string) tea.Cmd {
 
 func (m *model) viewSettings() []string {
 	var lines []string
+	if m.st.ConfigErr != "" { // first, so the window never hides it
+		lines = append(lines, "  "+stBad.Render(clip("config.json: "+m.st.ConfigErr, m.mainW()-3)), "")
+	}
 	sel, group := 0, ""
 	for i, st := range m.settings() {
 		if st.group != group {
