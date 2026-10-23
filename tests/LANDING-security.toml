@@ -18,6 +18,9 @@ paths = [
   # Decides which modules are installed and which projects may use them.
   "internal/mod/modules/**",
 
+  # Runs a module's program as the person, outside the sandbox.
+  "internal/mod/runner/**",
+
   # Mounts and covers for a run, effects applied outside the sandbox, the
   # hard ceiling, login and token handling, and the workspace paths that
   # define what is private.
