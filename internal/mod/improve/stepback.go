@@ -365,10 +365,12 @@ func (m *Module) transcript(r core.Run, n int) string {
 	return b.String()
 }
 
-// fileFault files the scores, the setup and the run ids against the Hive's
-// own source, which becomes an issue on its forge. The transcripts go only to
-// the task's worker, as a file on the host. A fault on an isolated project, or
-// with no Hive source to file against, asks the person instead.
+// fileFault files the scores, the count of asks and the run ids against the
+// Hive's own source, which becomes an issue on its forge that may be public.
+// The setup and the transcripts were written after reading the project, so
+// they go only to the task's worker, as a file on the host. A fault on an
+// isolated project, or with no Hive source to file against, asks the person
+// instead.
 func (m *Module) fileFault(s StepBack, p core.Project, exp core.Run, sc core.Score) string {
 	var ids []string
 	var shown []core.Run
@@ -380,24 +382,27 @@ func (m *Module) fileFault(s StepBack, p core.Project, exp core.Run, sc core.Sco
 		}
 	}
 	set, _ := json.MarshalIndent(s.Setup, "", "  ")
+	asks, better := 0, "higher"
+	if s.Setup != nil {
+		asks = len(s.Setup.Asks)
+	}
+	if sc.Direction == "lower" {
+		better = "lower"
+	}
 	title := fmt.Sprintf("The Hive's own setup lost to a simpler one on %s: %g against %g", p.Name, *s.Score, s.Best)
-	report := fmt.Sprintf(`A step-back on %s (%s) asked whether the Hive's approach is right and what the simplest setup is that might beat it, and ran its answer.
+	report := fmt.Sprintf(`A step-back on %s asked whether the Hive's approach is right and what the simplest setup is that might beat it, and ran its answer: one harness session sent %d ask(s).
 
 From the project's start at %s, the setup scored %g. The best the Hive has kept is %g (%s is better, tolerance %g). The setup cost $%.2f; the Hive's runs on the project since the last step-back cost $%.2f.
 
-The setup:
-
-%s
-
 The setup ran as %s; the Hive's latest runs on the project were %s.
-`, p.Name, s.Why, core.Short(s.From), *s.Score, s.Best, sc.Direction, sc.Tolerance, exp.Cost, spent, set, exp.ID, strings.Join(ids, ", "))
+`, p.Name, asks, core.Short(s.From), *s.Score, s.Best, better, sc.Tolerance, exp.Cost, spent, exp.ID, strings.Join(ids, ", "))
 	for _, self := range m.C.Projects.List() {
 		if self.Self && !p.Isolated {
-			transcripts := fmt.Sprintf("# What the setup did (run %s)\n\n%s\n# What the Hive's runs did, newest first\n\n", exp.ID, m.transcript(exp, 6000))
+			transcripts := fmt.Sprintf("# The setup\n\n%s\n\n# What the setup did (run %s)\n\n%s\n# What the Hive's runs did, newest first\n\n", set, exp.ID, m.transcript(exp, 6000))
 			for _, r := range shown {
 				transcripts += fmt.Sprintf("## %s %s ($%.2f)\n\n%s\n", r.Role, r.ID, r.Cost, m.transcript(r, 1500))
 			}
-			t, err := m.Work.File(work.Brief{Project: self.Name, Title: title, From: s.Run, Known: report + "\nWhat each of those runs said and did is in $HIVE_RUN/transcripts.md.",
+			t, err := m.Work.File(work.Brief{Project: self.Name, Title: title, From: s.Run, Known: report + "\nThe setup, and what each of those runs said and did, is in $HIVE_RUN/transcripts.md. Quote nothing from it in commits, the PR or your finish text: it can hold the project's own text.",
 				Inputs: map[string]string{"transcripts.md": transcripts},
 				Done:   "the prompt or module that held the Hive's agents back is changed, from what the transcripts show the simpler setup did that they didn't"})
 			if err == nil {

@@ -77,12 +77,13 @@ func won(t *testing.T, m *Module, isolated bool) (core.Run, string) {
 	said(t, m, "w1", "p", "SECRET-HIVE ran make")
 	exp := said(t, m, "stepback-1-exp", "p", "SECRET-SETUP ran make")
 	nine := 9.0
-	s := StepBack{ID: "stepback-1", Run: "stepback-1", Project: "p", Score: &nine, Best: 5, Setup: &Setup{Asks: []string{"raise it"}}}
-	return exp, m.fileFault(s, p, exp, core.Score{Direction: "higher"})
+	s := StepBack{ID: "stepback-1", Run: "stepback-1", Project: "p", Score: &nine, Best: 5, Setup: &Setup{Why: "SECRET-WHY", Asks: []string{"SECRET-ASK"}}}
+	return exp, m.fileFault(s, p, exp, core.Score{Direction: "SECRET-DIR"})
 }
 
-// A fault files the scores, the setup and the run ids against the Hive's own
-// source; the transcripts reach only its worker, as a file on the host.
+// A fault files the scores, the count of asks and the run ids against the
+// Hive's own source; the setup and the transcripts reach only its worker, as a
+// file on the host, and the worker is told to quote none of it.
 func TestFaultKeepsTranscriptsOffTheIssue(t *testing.T) {
 	m := rig(t)
 	exp, id := won(t, m, false)
@@ -92,14 +93,16 @@ func TestFaultKeepsTranscriptsOffTheIssue(t *testing.T) {
 	}
 	task := tasks[0]
 	if issue := task.Title + task.Done + task.Known; strings.Contains(issue, "SECRET") || !strings.Contains(issue, "9 against 5") ||
-		!strings.Contains(issue, exp.ID) || !strings.Contains(issue, "w1") || !strings.Contains(issue, "raise it") {
-		t.Fatalf("the issue must carry the scores, the setup and the run ids, and no transcript:\n%s", issue)
+		!strings.Contains(issue, exp.ID) || !strings.Contains(issue, "w1") || !strings.Contains(issue, "1 ask") ||
+		!strings.Contains(issue, "higher is better") || !strings.Contains(issue, "Quote nothing") {
+		t.Fatalf("the issue must carry the scores, the count of asks and the run ids, and no setup or transcript:\n%s", issue)
 	}
 	ro := filepath.Join(m.C.WS.RunRO("w-"+id), "transcripts.md")
 	for end := time.Now().Add(time.Minute); ; time.Sleep(50 * time.Millisecond) {
 		m.Work.Tick()
 		if got, err := os.ReadFile(ro); err == nil {
-			if !strings.Contains(string(got), "SECRET-SETUP") || !strings.Contains(string(got), "SECRET-HIVE") {
+			if !strings.Contains(string(got), "SECRET-SETUP") || !strings.Contains(string(got), "SECRET-HIVE") ||
+				!strings.Contains(string(got), "SECRET-WHY") || !strings.Contains(string(got), "SECRET-ASK") {
 				t.Fatalf("the worker's transcripts lack a run:\n%s", got)
 			}
 			break
