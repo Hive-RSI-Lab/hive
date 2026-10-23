@@ -161,6 +161,7 @@ A value of @path reads that file. Common ops:
   install   --tool python|uv|node|go [--version 3.12]   installs it for every agent, no root,
                                                  on your PATH at once; give the call a 25-minute timeout
   install   --system "sudo apt-get install -y x" --why "..."   a root install: goes to the person
+  search    --query "words" [--limit n|all]     the knowledge base pieces that match, best first
   remember  --title "..." --text "..." [--tags a,b]   write to the knowledge base
   schedule  --in 2h --text "..."                 a wake-up message to yourself
   status                                         projects, work in flight, scores`
