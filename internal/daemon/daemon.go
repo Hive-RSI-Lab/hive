@@ -490,7 +490,13 @@ func (s *server) routes() http.Handler {
 		}
 		return evs, nil
 	})
-	h("/api/update", func(*http.Request) (any, error) { return a.Release.Update() })
+	h("/api/update", func(r *http.Request) (any, error) {
+		var b struct{ Release string }
+		if err := decode(r, &b); err != nil {
+			return nil, err
+		}
+		return a.Release.Update(b.Release)
+	})
 	h("/api/shutdown", func(*http.Request) (any, error) {
 		go func() { time.Sleep(100 * time.Millisecond); s.cancel() }()
 		return "stopping", nil

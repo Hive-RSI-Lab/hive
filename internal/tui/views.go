@@ -676,6 +676,9 @@ func (m *model) settings() []setting {
 		{label: "WSL distro", value: c.WSLDistro, key: "wsl_distro"},
 		{label: "auto-update", value: auto, key: "auto_update"},
 		{label: "release repo", value: c.ReleaseRepo, key: "release_repo"},
+		{label: "release", value: pinText(c.ReleasePin), action: func() tea.Cmd {
+			return func() tea.Msg { return flashMsg("`" + core.Cmd + " update --release <tag>` installs and pins a release") }
+		}},
 	}
 	for _, name := range sortedKeys(c.Schedules) {
 		s = append(s, setting{label: "schedule " + name, value: c.Schedules[name], key: "schedule:" + name})
@@ -685,6 +688,13 @@ func (m *model) settings() []setting {
 		setting{label: "log in: GitHub", value: "runs the GitHub CLI's own login", action: func() tea.Cmd { return login("gh", "auth", "login") }},
 	)
 	return s
+}
+
+func pinText(pin string) string {
+	if pin == "" {
+		return "the newest"
+	}
+	return "pinned to " + pin + ", auto-update off (`" + core.Cmd + " update` goes back to the newest)"
 }
 
 func autonomyText(n int) string {
