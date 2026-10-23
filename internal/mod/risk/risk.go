@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -464,10 +465,17 @@ func voteOf(p core.Run) (string, string) {
 	var v struct{ Vote, Reason string }
 	d := json.NewDecoder(bytes.NewReader(p.Structured))
 	d.DisallowUnknownFields()
-	if p.Status != core.StatusDone || d.Decode(&v) != nil || d.More() || (v.Vote != "approve" && v.Vote != "decline") {
+	if p.Status != core.StatusDone || d.Decode(&v) != nil || !atEnd(d) || (v.Vote != "approve" && v.Vote != "decline") {
 		return "decline", "no vote (" + p.Status + ")"
 	}
 	return v.Vote, core.Clip(v.Reason, 2000)
+}
+
+// atEnd says the decoder has nothing left but whitespace; More() alone
+// misses a stray closing delimiter such as the second brace of "{...}}".
+func atEnd(d *json.Decoder) bool {
+	_, err := d.Token()
+	return err == io.EOF
 }
 
 // advance moves a tribunal on once every seat has voted this round.

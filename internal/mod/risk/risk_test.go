@@ -626,6 +626,10 @@ func TestVoteMustBeClean(t *testing.T) {
 		`{"vote":true,"reason":"fine"}`:                   "decline",
 		`{"vote":"yes","reason":"fine"}`:                  "decline",
 		`{"vote":"approve"}{"vote":"approve"}`:            "decline",
+		`{"vote":"approve","reason":"fine"}}`:             "decline",
+		`{"vote":"approve","reason":"fine"}]`:             "decline",
+		`{"vote":"approve","reason":"fine"} x`:            "decline",
+		"{\"vote\":\"approve\",\"reason\":\"fine\"}\n":    "approve",
 	} {
 		if got, _ := voteOf(core.Run{Status: core.StatusDone, Structured: json.RawMessage(raw)}); got != want {
 			t.Errorf("voteOf(%s) = %s, want %s", raw, got, want)
