@@ -1,6 +1,6 @@
 // Package fakeagent is a scripted agent that speaks Claude Code's
 // stream-json and uses the real mailbox. Keywords in the brief steer it
-// (FAKE:block, FAKE:breaktests, FAKE:lowerscore, FAKE:reviewfix, FAKE:crash,
+// (FAKE:block, FAKE:breaktests, FAKE:lowerscore, FAKE:checkpoints (two commits in one turn, each waited on until merged), FAKE:reviewfix, FAKE:crash,
 // FAKE:limit, FAKE:needpackage, FAKE:goals, FAKE:rmoutside <path>, FAKE:inject, FAKE:peek <warden run>, FAKE:paid (a run that costs), FAKE:spendall (spends its --max-budget-usd), and FAKE:warden*/FAKE:panel* for the risk path), so tests and the release
 // dry run drive every path of the Hive without spending plan usage.
 package fakeagent
@@ -256,6 +256,16 @@ func worker(all, prompt, system string) (string, error) {
 		os.WriteFile("score.txt", []byte("1\n"), 0o644)
 	case strings.Contains(all, "FAKE:raisescore"):
 		os.WriteFile("score.txt", []byte("9\n"), 0o644)
+	case strings.Contains(all, "FAKE:checkpoints"):
+		for i, score := range []string{"7", "9"} {
+			os.WriteFile("score.txt", []byte(score+"\n"), 0o644)
+			if out, err := run("git", "commit", "-qam", "score "+score); err != nil {
+				return "", fmt.Errorf("git commit: %v %s", err, out)
+			}
+			if !banked(i + 1) {
+				return "", fmt.Errorf("checkpoint %d never merged", i+1)
+			}
+		}
 	case strings.Contains(all, "FAKE:goals"):
 		appendFile(".hive/goals.md", "- a goal the worker wrote down\n")
 	case strings.Contains(all, "FAKE:docs"):
@@ -277,6 +287,21 @@ func worker(all, prompt, system string) (string, error) {
 	}
 	_, err := call("finish", map[string]string{"status": "done", "account": "FAKE: made the change", "tested": "ran nothing", "unsure": "everything"}, time.Minute)
 	return "done", err
+}
+
+// banked waits, in the same turn, until the journal shows n of this worker's
+// commits merged as checkpoints.
+func banked(n int) bool {
+	want, mine := fmt.Sprintf(`"banked":%d`, n), `"worker":"`+os.Getenv("HIVE_ID")+`"`
+	for end := time.Now().Add(4 * time.Minute); time.Now().Before(end); time.Sleep(time.Second) {
+		raw, _ := os.ReadFile(filepath.Join(os.Getenv("HIVE_STATE"), "events.jsonl"))
+		for _, l := range strings.Split(string(raw), "\n") {
+			if strings.Contains(l, want) && strings.Contains(l, mine) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // peek reads what the rest of the Hive left in $HIVE_STATE (another run's log,
