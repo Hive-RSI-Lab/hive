@@ -34,6 +34,7 @@ const usage = `hive: a small team of AI agents working on your projects.
   hive approve <id> [note] say yes to it (its first option)
   hive refuse <id> [note]  say no to it (its last option)
   hive login               log in to Claude Code and GitHub with their own logins
+  hive login add <name>    add another Claude login to spread runs over; add "codex" for Codex
   hive doctor [--bare]     check the install; --bare opts into unsandboxed agents
   hive update              install the newest release
   hive shutdown            stop the Hive (running agents finish their turn)
@@ -141,6 +142,27 @@ func run(args []string) int {
 			return fmt.Errorf("nothing waiting on you has id %s (%s status lists them)", args[0], core.Cmd)
 		})
 	case "login":
+		if len(args) > 0 && args[0] == "add" {
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: hive login add <name> [claude|codex]")
+				return 2
+			}
+			ws, err := workspace()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			h := "claude"
+			if len(args) > 2 {
+				h = args[2]
+			}
+			if err := setup.AddLogin(ws, h, args[1]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			fmt.Printf("Added login %s; runs now spread over it too.\n", args[1])
+			return 0
+		}
 		if err := setup.Login(len(args) > 0 && args[0] == "--all"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -329,7 +351,7 @@ func cmdStatus() int {
 		}
 		fmt.Printf("\nagents: %d live\n", live)
 		for _, p := range st.Plans {
-			fmt.Printf("plan %s: %s, %.0f%% of the %s window, resets %s\n", p.Harness, p.Limit.Status, p.Limit.Utilization*100, p.Limit.Window, p.Limit.ResetsAt.Local().Format("Mon 15:04"))
+			fmt.Printf("plan %s: %s, %.0f%% of the %s window, resets %s\n", p.Key(), p.Limit.Status, p.Limit.Utilization*100, p.Limit.Window, p.Limit.ResetsAt.Local().Format("Mon 15:04"))
 		}
 		if len(st.Asks) > 0 {
 			fmt.Println("\nwaiting on you:")
@@ -382,6 +404,12 @@ func cmdDoctor(args []string) int {
 			ok = false
 			fmt.Println("✗ Claude Code is not installed inside WSL. Install it there:\n    wsl -- bash -lc \"curl -fsSL https://claude.ai/install.sh | bash\"")
 		}
+	}
+	if msg, err := setup.CodexReport(ws, c.HiveLinux()); err != nil {
+		ok = false
+		fmt.Printf("✗ %v\n", err)
+	} else if msg != "" {
+		fmt.Println("✓ " + msg)
 	}
 	if setup.AutostartEnabled() {
 		fmt.Println("✓ starts with the machine")
