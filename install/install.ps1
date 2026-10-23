@@ -46,6 +46,14 @@ function Set-UserPath([string]$Remove, [string]$Add) {
   [Environment]::SetEnvironmentVariable('HIVE_PATH_CHANGED', $null, 'User')
 }
 
+# Whether $Dir lies outside $Old, so removing $Old leaves it alone. Paths are
+# compared whole, so a trailing separator or another case names the same folder.
+function Test-Outside([string]$Dir, [string]$Old) {
+  $d = [IO.Path]::GetFullPath($Dir).TrimEnd('\', '/') + '\'
+  $o = [IO.Path]::GetFullPath($Old).TrimEnd('\', '/') + '\'
+  -not $d.StartsWith($o, [StringComparison]::OrdinalIgnoreCase)
+}
+
 Write-Host "Downloading the Hive ($version) from $repo ..."
 $base = if ($version -ne 'latest') { "https://github.com/$repo/releases/download/$version" } else { "https://github.com/$repo/releases/latest/download" }
 foreach ($a in $assets) {
@@ -63,7 +71,7 @@ $exe = Join-Path $dir "$cmd.exe"
 # Up to v0.1.2 the Hive lived in Programs\hive-v0, as hive-v0.exe or, once updated, hive.exe:
 # stop it, point its login autostart here and remove that folder, so only this install runs.
 $oldDir = Join-Path $env:LOCALAPPDATA 'Programs\hive-v0'
-if ($oldDir -ne $dir -and (Test-Path $oldDir)) {
+if ((Test-Outside $dir $oldDir) -and (Test-Path $oldDir)) {
   foreach ($old in Get-ChildItem $oldDir -Filter 'hive*.exe') { Invoke-Native { & $old.FullName shutdown } -Quiet | Out-Null }
   $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
   if ((Get-ItemProperty $run -Name Hive -ErrorAction SilentlyContinue).Hive -like "*$oldDir\*") {
