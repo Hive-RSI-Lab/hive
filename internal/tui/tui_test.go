@@ -52,6 +52,7 @@ func testModel(w, h int) *model {
 	now := time.Now()
 	long := strings.Repeat("words that wrap ", 40)
 	m.msgs["lead"] = []chat.Message{
+		{ID: "0", Thread: "0", From: "person", Name: "you", Text: "earlier " + long, At: now},
 		{ID: "1", Thread: "1", From: "person", Name: "you", Text: "please do " + long, At: now},
 		{ID: "2", Thread: "1", From: "lead-x", Name: "lead", Text: "Understood. " + long, At: now},
 		{ID: "3", Thread: "1", From: "hive", Name: "hive", Text: "Merged: https://github.com/me/textkit/pull/3", At: now},
@@ -127,5 +128,67 @@ func TestStackSurvivesTinyWindows(t *testing.T) {
 		m.Update(tea.KeyMsg{Type: tea.KeyRight})
 		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		m.View()
+	}
+}
+
+// The thread-pane tests from main, moved onto the redesigned channel pane:
+// it opens on the conversation's end, under the chat's title and lead status.
+func TestChannelScrolls(t *testing.T) {
+	m := testModel(80, 20)
+	m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	last, first := "pull/3", "earlier"
+	if v := m.View(); !strings.Contains(v, last) || strings.Contains(v, first) || !strings.Contains(v, "idle") {
+		t.Fatalf("want the title and the end, with the first thread above the screen:\n%s", v)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyPgUp}) // from the new-thread box, where the channel opens
+	if strings.Contains(m.View(), last) {
+		t.Fatal("PgUp did not leave the last line")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if !strings.Contains(m.View(), last) {
+		t.Fatal("PgDn did not come back to the last line")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc}) // leave the box; Home and End belong to it
+	m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	if v := m.View(); !strings.Contains(v, first) || !strings.Contains(v, "idle") {
+		t.Fatal("Home did not show the first thread under the title")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionRelease})
+	if m.chScroll != 3 {
+		t.Fatalf("wheel up: scroll %d, want 3", m.chScroll)
+	}
+	m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	if m.chScroll != 0 {
+		t.Fatalf("wheel down: scroll %d, want 0", m.chScroll)
+	}
+}
+
+func TestChannelUpKeepsSelectionInView(t *testing.T) {
+	m := testModel(80, 20)
+	m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	for i := 0; i < 5 && m.threadSel != 0; i++ {
+		m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		if !strings.Contains(m.View(), "▌") {
+			t.Fatalf("up %d left the selected thread off screen", i+1)
+		}
+	}
+	if m.threadSel != 0 {
+		t.Fatalf("up stopped at thread %d", m.threadSel)
+	}
+}
+
+func TestWheelScrollsDetail(t *testing.T) {
+	m := testModel(80, 20)
+	m.stack = []detail{{kind: "run"}}
+	m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionRelease})
+	if m.stack[0].scroll != 3 {
+		t.Fatalf("wheel down: scroll %d, want 3", m.stack[0].scroll)
+	}
+	m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	if m.stack[0].scroll != 0 {
+		t.Fatalf("wheel up: scroll %d, want 0", m.stack[0].scroll)
 	}
 }

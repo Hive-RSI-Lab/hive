@@ -15,10 +15,10 @@
    worker-2       │
    reviewer       │   Schedules
    tribunal       │     hive.update                 every 6h
- ▸ website        │     improve.sweep               every 12h
+ ▸ website        │     improve.stepback            every 72h
+                  │     improve.sweep               every 12h
                   │     kb.file                     daily 04:00
                   │     modules.update              every 24h
                   │
-                  │   Log in
 ──────────────────┴─────────────────────────────────────────────────────────────
  ↑↓ move   enter change   tab sidebar

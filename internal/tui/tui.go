@@ -283,14 +283,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-	case tea.MouseMsg:
-		if s := msg.String(); s == "wheelup" || s == "wheeldown" {
-			if m.focus == 2 {
-				m.thScroll = scroll(m.thScroll, s, m.h-4)
-			} else {
-				m.chScroll = scroll(m.chScroll, s, m.h-4)
-			}
-		}
 	case sentMsg:
 		for i, o := range m.outbox {
 			if o.n == msg.out.n {
@@ -347,6 +339,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.fetchState()
 	case tea.KeyMsg:
 		return m.key(msg)
+	case tea.MouseMsg:
+		s := map[tea.MouseButton]string{tea.MouseButtonWheelUp: "wheelup", tea.MouseButtonWheelDown: "wheeldown"}[msg.Button]
+		switch {
+		case s == "" || msg.Action != tea.MouseActionPress || m.help || m.showSince:
+		case len(m.stack) > 0:
+			if top := &m.stack[len(m.stack)-1]; top.kind != "module" {
+				top.scroll = max(0, top.scroll+map[string]int{"wheelup": -3, "wheeldown": 3}[s])
+			}
+		case m.section != secChats:
+		case m.focus == 2:
+			m.thScroll = scroll(m.thScroll, s, m.h-4)
+		default:
+			m.chScroll = scroll(m.chScroll, s, m.h-4)
+		}
 	}
 	return m, nil
 }
@@ -493,6 +499,10 @@ func (m *model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgup", "pgdown":
 		if m.reply != "" {
 			m.thScroll = scroll(m.thScroll, s, m.h-4)
+			return m, nil
+		}
+		if !m.editing { // the new-thread box scrolls the channel above it
+			m.chScroll = scroll(m.chScroll, s, m.h-4)
 			return m, nil
 		}
 	case "enter":
