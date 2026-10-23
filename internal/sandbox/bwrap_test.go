@@ -103,8 +103,12 @@ func TestHostInterpreterReachesInside(t *testing.T) {
 	inst := mkTree(t, home, ".local/share/uv/python/cpython-3.12/bin/python3", ".local/share/uv/python/cpython-3.12/lib/os.py")[0]
 	inst = filepath.Dir(filepath.Dir(inst))
 	mkTree(t, home, ".local/share/keyrings/login.keyring")
-	os.MkdirAll(filepath.Join(home, ".local/bin"), 0o755)
-	os.Symlink(filepath.Join(inst, "bin/python3"), filepath.Join(home, ".local/bin/python3"))
+	if err := os.MkdirAll(filepath.Join(home, ".local/bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(inst, "bin/python3"), filepath.Join(home, ".local/bin/python3")); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", filepath.Join(home, ".local/bin")+":/usr/bin:/bin")
 	a := initArgs{Spec: Spec{Env: InsideEnv("/hive/home", false)}}
@@ -148,6 +152,7 @@ func TestInstallRootNeverBindsMore(t *testing.T) {
 		{secrets[5], home, "", false},
 		{uvLocal, "", "", false},
 		{uvCargo, "", "", false},
+		{uvLocal, "rel/home", "", false},
 	} {
 		got, ok := installRoot(c.p, c.home)
 		if got != c.want || ok != c.ok {

@@ -679,8 +679,9 @@ func TestOutsideStep(t *testing.T) {
 
 // TestHostPython: the person's python lives outside the system dirs (as uv or
 // pip put it under the home), and the baseline and a worker's checks run that
-// same program, bare and under HIVE_E2E_SANDBOX=auto. Not parallel: the
-// daemon takes PATH from this process.
+// same program, bare and under HIVE_E2E_SANDBOX=auto. ci.yml's sandboxed-e2e
+// job runs it under bubblewrap. Not parallel: the daemon takes PATH from this
+// process.
 func TestHostPython(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX sh")
