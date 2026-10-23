@@ -36,7 +36,7 @@ const usage = `hive: a small team of AI agents working on your projects.
   hive login               log in to Claude Code and GitHub with their own logins
   hive login add <name>    add another Claude login to spread runs over; add "codex" for Codex
   hive doctor [--bare]     check the install; --bare opts into unsandboxed agents
-  hive update              install the newest release
+  hive update              install the newest release [--release <tag>: that one, and stay on it]
   hive shutdown            stop the Hive (running agents finish their turn)
   hive uninstall           remove autostart and the binary's record; leaves your folder
   hive --version
@@ -162,7 +162,11 @@ func run(args []string) int {
 	case "update":
 		return withClient(func(c *api.Client) error {
 			var msg string
-			if err := c.Do("POST", "/api/update", map[string]string{}, &msg); err != nil {
+			body := map[string]string{}
+			if len(args) == 2 && args[0] == "--release" {
+				body["release"] = args[1]
+			}
+			if err := c.Do("POST", "/api/update", body, &msg); err != nil {
 				return err
 			}
 			fmt.Println(msg)
@@ -314,6 +318,9 @@ func cmdStatus() int {
 			return err
 		}
 		fmt.Printf("Hive %s  ·  %s\n", st.Version, st.Workspace)
+		if st.Config.ReleasePin != "" {
+			fmt.Printf("pinned to %s: `%s update` goes back to the newest\n", st.Config.ReleasePin, core.Cmd)
+		}
 		if st.SandboxErr != "" {
 			fmt.Printf("sandbox: NOT AVAILABLE (%s)\n", core.Clip(st.SandboxErr, 200))
 		} else {

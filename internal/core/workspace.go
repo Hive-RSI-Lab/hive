@@ -62,6 +62,7 @@ type Config struct {
 	WSLDistro    string                     `json:"wsl_distro,omitempty"`
 	ReleaseRepo  string                     `json:"release_repo"`
 	AutoUpdate   bool                       `json:"auto_update"`
+	ReleasePin   string                     `json:"release_pin,omitempty"` // the release `hive update --release` chose; auto-update stays on it
 	APIKeyOptIn  bool                       `json:"api_key_opt_in"`
 	ReviewRounds int                        `json:"review_rounds"`
 	Projects     map[string]ProjectSettings `json:"projects,omitempty"`
