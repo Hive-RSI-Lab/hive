@@ -56,7 +56,8 @@ type Request struct {
 	PersonOK bool      `json:"person_ok,omitempty"` // the person said run, to this script
 	Output   string    `json:"output,omitempty"`
 	URL      string    `json:"url,omitempty"`
-	Ask      string    `json:"ask"` // the person's queue item
+	Name     string    `json:"name,omitempty"` // the module name the person approved
+	Ask      string    `json:"ask"`            // the person's queue item
 	Outcome  string    `json:"outcome,omitempty"`
 	Note     string    `json:"note,omitempty"`
 	Created  time.Time `json:"created"`
@@ -635,7 +636,7 @@ func (m *Module) opInstall(r core.Run, args json.RawMessage) (any, error) {
 	if _, ok := m.Mod.Get(a.Name); ok {
 		return nil, fmt.Errorf("a module named %s is already installed", a.Name)
 	}
-	req := &Request{ID: core.NewID(), Kind: "module", Origin: r.ID, Project: a.Project, URL: a.URL, Want: "install module " + a.Name, Created: time.Now().UTC()}
+	req := &Request{ID: core.NewID(), Kind: "module", Origin: r.ID, Project: a.Project, URL: a.URL, Name: a.Name, Want: "install module " + a.Name, Created: time.Now().UTC()}
 	ask := m.C.Person.Ask(core.Ask{Kind: "module", Ref: req.ID, From: r.ID,
 		Title:   "Install module " + a.Name + "?",
 		Detail:  "From " + a.URL + ". It brings outside code onto this machine; agents will read and use it. The Hive clones it into .modules/" + a.Name + ".",
@@ -650,7 +651,7 @@ func (m *Module) onModule(a core.Ask) {
 	if !ok {
 		return
 	}
-	name := modules.NameFromURL(req.URL)
+	name := req.Name
 	if a.Answer != "install" {
 		req.Outcome = "declined"
 		m.save(&req)

@@ -47,6 +47,9 @@ func TestAskAboutTheHive(t *testing.T) {
 	probe := filepath.Join(h.ws.Modules(), "probe")
 	os.MkdirAll(probe, 0o755)
 	os.WriteFile(filepath.Join(probe, "module.json"), []byte(`{"name": "probe", "description": "a module only this test installs", "provides": {"prompts": ["auditor.md"]}, "projects": ["*"]}`), 0o644)
+	// The fake lead reads the panel size from here; pinned so a rewording of
+	// the shipped tribunal prompt can't fail this test.
+	os.WriteFile(filepath.Join(h.ws.Modules(), "agents", "tribunal.md"), []byte("A warden convened a panel of three.\n"), 0o644)
 	answer := askAboutTheHive(t, h, minute)
 	for _, want := range []string{"probe", "auditor", "warden", "panel of three", "waiting on you"} {
 		if !strings.Contains(answer, want) {

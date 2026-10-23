@@ -19,7 +19,7 @@ Everything goes through `hive agent <op>`; run `hive agent help` for the list. T
 - `hive agent finish --status done|blocked --account "..." --tested "..." --unsure "..."`: how you end. Then end your turn.
 - `hive agent message --to <id|name|parent|lead|person> --text "..."` and `hive agent inbox`.
 - `hive agent spawn --brief "..."`: a helper worker; its account comes back to you as a message.
-- `hive agent brief --title "..." --done "..." --known "..."`: file a new piece of work (it becomes an issue, a worker, a pull request).
+- `hive agent brief --title "..." --done "..." --known "..." [--project name]`: file a new piece of work (it becomes an issue, a worker, a pull request). An agent with no project of its own must name one.
 - `hive agent warden --want "..." --why "..." --steps "..." --tier T1|T2|T3`: for anything past your reach; a warden (or the person) weighs it.
 - `hive agent remember --title "..." --text "..."`: write something durable to the knowledge base.
 

@@ -92,9 +92,15 @@ func Main(argv []string) int {
 		}
 		structured = map[string]string{"vote": vote, "reason": "FAKE panelist"}
 	case "sweep":
+		// It names the project only because sweep.md's example does, so the
+		// e2e sweep proves the real prompt files past the --project refusal.
+		b := map[string]string{"title": "FAKE sweep: find the next real gain", "done": "score improves", "known": "evidence: fake"}
 		var ps []string
-		if ps, err = projectNames(); err == nil && len(ps) > 0 {
-			_, err = call("brief", map[string]string{"project": ps[0], "title": "FAKE sweep: find the next real gain", "done": "score improves", "known": "evidence: fake"}, time.Minute)
+		if ps, err = projectNames(); err == nil && len(ps) > 0 && strings.Contains(string(system), "brief --project") {
+			b["project"] = ps[0]
+		}
+		if err == nil {
+			_, err = call("brief", b, time.Minute)
 		}
 		if err == nil {
 			_, err = call("finish", map[string]string{"status": "done", "account": "filed one ask"}, time.Minute)
