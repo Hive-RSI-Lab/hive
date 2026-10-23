@@ -415,8 +415,9 @@ func (m *Module) Digest(since int64) string {
 var notFound = regexp.MustCompile(`(?m)(?:^|\s)(?:\S*/)?(?:ba|da)?sh: (?:line )?(?:\d+: )?([^\s:]+): (?:command )?not found|hive: missing program: ([^\n]+)`)
 
 // MissingTool says in plain words which program the test or score command
-// (kind) could not start, or "" when the output shows no such failure. A name
-// starting with "-" means the command began with an empty program.
+// (kind) could not start, and how to get it, or "" when the output shows no
+// such failure. A name starting with "-" means the command began with an empty
+// program.
 func MissingTool(project, kind, out string) string {
 	m := notFound.FindStringSubmatch(out)
 	if m == nil {
@@ -427,7 +428,13 @@ func MissingTool(project, kind, out string) string {
 		so = "so " + project + "'s score can't be measured"
 	}
 	if tool := m[1] + m[2]; !strings.HasPrefix(tool, "-") {
-		return tool + " isn't installed, " + so + "; install it where the Hive runs its checks"
+		return tool + " isn't installed, " + so + ". " + getIt(tool)
 	}
-	return "the " + kind + " command for " + project + " started with no program (an interpreter variable came out empty, so the interpreter it looks for isn't installed), " + so
+	return "the " + kind + " command for " + project + " started with no program (an interpreter variable came out empty, so the interpreter it looks for isn't installed), " + so + ". " + getIt("the interpreter it needs")
+}
+
+// getIt says how the person gets a missing program onto the machine: install
+// it themselves, or ask the lead, whose agent asks a warden to run the install.
+func getIt(tool string) string {
+	return "Install " + tool + " on this machine, or ask the lead in chat to install it: an agent asks a warden, who runs the install for you."
 }

@@ -7,10 +7,10 @@ import (
 
 func TestMissingTool(t *testing.T) {
 	got := MissingTool("textkit-2", "test", "tests red: /bin/sh: 1: -m: not found")
-	if !strings.Contains(got, "no program") || strings.Contains(got, "-m") {
+	if !strings.Contains(got, "no program") || strings.Contains(got, "-m") || !strings.Contains(got, "ask the lead") {
 		t.Errorf("empty interpreter: %q", got)
 	}
-	if got := MissingTool("p", "test", "sh: 1: python3: not found"); got != "python3 isn't installed, so p's tests can't run; install it where the Hive runs its checks" {
+	if got := MissingTool("p", "test", "sh: 1: python3: not found"); got != "python3 isn't installed, so p's tests can't run. Install python3 on this machine, or ask the lead in chat to install it: an agent asks a warden, who runs the install for you." {
 		t.Errorf("named tool: %q", got)
 	}
 	if got := MissingTool("p", "test", "bash: line 1: node: command not found"); !strings.HasPrefix(got, "node isn't installed") {
