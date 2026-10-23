@@ -58,9 +58,8 @@ func TestReportSharing(t *testing.T) {
 		t.Fatalf("sharing is off, yet %d batches went out", n)
 	}
 
-	time.Sleep(1100 * time.Millisecond) // sharing starts on the next second
 	cfg = h.ws.LoadConfig()
-	cfg.Share = time.Now().UTC().Format(time.RFC3339)
+	cfg.SetShare(true)
 	h.ws.SaveConfig(cfg)
 	h.post("/api/ask", map[string]string{"project": "rep", "title": "port the parser", "known": "FAKE:block"}, nil)
 	h.wait("the second task to block", 2*minute, taskStage("rep", "port the parser", work.StageBlocked))
@@ -78,7 +77,7 @@ func TestReportSharing(t *testing.T) {
 			blocked++
 		}
 	}
-	if p.Schema != 1 || p.Install == "" || p.Harness != "fake" || blocked != 1 || p.Usage.Runs == 0 {
+	if p.Schema != 1 || p.Install == "" || p.Harness != "fake" || blocked != 1 || p.Usage.Runs == 0 || p.Usage.Turns == 0 {
 		t.Fatalf("payload: %s", got[0])
 	}
 	sent := report.Sent(h.ws)

@@ -56,10 +56,28 @@ type Config struct {
 	Projects     map[string]ProjectSettings `json:"projects,omitempty"`
 	Schedules    map[string]string          `json:"schedules,omitempty"` // name -> "every 12h" | "daily 03:00" | "off"
 	// Share is when the person said yes to sharing failures and usage with
-	// the developer (docs/report.md); empty is off.
+	// the developer (docs/report.md), "off" once they said no, empty if
+	// nobody has asked yet. Anything else counts as off.
 	Share     string `json:"share,omitempty"`
 	ShareURL  string `json:"share_url,omitempty"`
 	InstallID string `json:"install_id,omitempty"`
+}
+
+// Sharing says whether sharing is on and since when.
+func (c Config) Sharing() (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339Nano, c.Share)
+	return t, err == nil
+}
+
+// SetShare records the person's answer; turning it on makes the install id.
+func (c *Config) SetShare(on bool) {
+	c.Share = "off"
+	if on {
+		c.Share = time.Now().UTC().Format(time.RFC3339Nano)
+		if c.InstallID == "" {
+			c.InstallID = NewUUID()
+		}
+	}
 }
 
 // ProjectSettings override workspace defaults per project.
@@ -186,6 +204,10 @@ func FindWorkspace() (Workspace, bool) {
 	root := DefaultRoot()
 	return Workspace{Root: root}, exists(filepath.Join(root, ".hive"))
 }
+
+// ShareAnswer holds the installer's answer to sharing until first run makes
+// the workspace and moves it into the config.
+func ShareAnswer() string { return filepath.Join(filepath.Dir(pointerFile()), "share") }
 
 // RememberWorkspace writes the pointer file.
 func RememberWorkspace(root string) error {

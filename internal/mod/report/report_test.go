@@ -63,6 +63,7 @@ var leaks = func() []struct{ in, secret string } {
 		{"db_password=Tr0ub4dor&3", "Tr0ub4dor&3"},
 		{"client_secret: 'q8w7e6r5t4y3'", "q8w7e6r5t4y3"},
 		{"Set-Cookie: session=4f9a1c7e2b; Path=/", "4f9a1c7e2b"},
+		{"Cookie: theme=dark; sid=hunter2pass", "hunter2pass"},
 		{"api-key: 0123abcd", "0123abcd"},
 		{"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\nAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----", "AAAAMwAAAAtzc2gtZW"},
 		{"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq9 (clipped", "MIIEpAIBAAKCAQEA7bq9"},
@@ -100,6 +101,7 @@ func TestScrubKeepsPlainText(t *testing.T) {
 		"the worker finished without any commits",
 		"go test ./internal/verylongpackagenamewithoutdigitsatall/...",
 		"exit status 1",
+		"author: Ihsan",
 	} {
 		if out := Scrub(s, ""); out != s {
 			t.Errorf("changed plain text:\n  in:  %s\n  out: %s", s, out)
@@ -145,9 +147,8 @@ func TestSendOnce(t *testing.T) {
 	defer srv.Close()
 	c := open(t, func(cfg *core.Config) { cfg.ShareURL = srv.URL })
 	c.J.MustAppend("task.saved", map[string]any{"id": "old", "stage": "blocked", "reason": "before sharing was on"})
-	time.Sleep(1100 * time.Millisecond) // Share has second resolution
 	cfg := c.WS.LoadConfig()
-	cfg.Share = time.Now().UTC().Format(time.RFC3339)
+	cfg.SetShare(true) // in the same second as the old event, which stays home
 	c.WS.SaveConfig(cfg)
 	c.J.MustAppend("run.created", map[string]any{"id": "w1", "role": "worker"})
 	c.J.MustAppend("run.turn_ended", map[string]any{"id": "w1", "status": "parked", "reason": "turn failed", "result": map[string]any{"text": "boom with " + leaks[0].secret, "is_error": true, "cost_usd": 0.5}})
@@ -183,6 +184,7 @@ func TestSendOnce(t *testing.T) {
 
 func TestUnreachableKeepsTheBatch(t *testing.T) {
 	c := open(t, func(cfg *core.Config) {
+		cfg.SetShare(true)
 		cfg.ShareURL, cfg.Share = "http://127.0.0.1:1/report", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	})
 	c.J.MustAppend("alert.raised", map[string]string{"kind": "quiet", "text": "x"})
@@ -191,7 +193,7 @@ func TestUnreachableKeepsTheBatch(t *testing.T) {
 	if res, err := m.Send(); err != nil || !strings.Contains(res, "try again") || len(Sent(c.WS)) != 0 {
 		t.Fatalf("unreachable: %q %v", res, err)
 	}
-	if p, _ := m.Build(c.WS.LoadConfig()); len(p.Failures) != 2 {
+	if p, _, _ := m.Build(c.WS.LoadConfig()); len(p.Failures) != 2 {
 		t.Fatalf("the batch should still hold the alert and the doctor failure: %+v", p.Failures)
 	}
 }
@@ -203,5 +205,70 @@ func TestSizeCap(t *testing.T) {
 	}
 	if raw := encode(&p); len(raw) > maxBytes || len(p.Failures) == 0 {
 		t.Fatalf("%d bytes, %d failures", len(raw), len(p.Failures))
+	}
+}
+
+// sharing opens a core with sharing on since a minute ago and one doctor
+// failure waiting.
+func sharing(t *testing.T, url string) *core.Core {
+	c := open(t, func(cfg *core.Config) {
+		cfg.SetShare(true)
+		cfg.ShareURL, cfg.Share = url, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	})
+	Note(c.WS, Failure{Kind: "doctor", Text: "A"})
+	return c
+}
+
+// pending is how many doctor failures still wait in the outbox.
+func pending(t *testing.T, c *core.Core) int {
+	p, _, _ := (&Module{C: c}).Build(c.WS.LoadConfig())
+	return len(p.Failures)
+}
+
+// A config that can't be read as on, or has no install id, sends nothing.
+func TestOnlyAValidOptInSends(t *testing.T) {
+	for _, edit := range []func(*core.Config){
+		func(cfg *core.Config) { cfg.Share = "yes" },
+		func(cfg *core.Config) { cfg.SetShare(false) },
+		func(cfg *core.Config) { cfg.SetShare(true); cfg.InstallID = "" },
+	} {
+		c := open(t, edit)
+		c.J.MustAppend("alert.raised", map[string]string{"kind": "quiet", "text": "x"})
+		if res, err := (&Module{C: c}).Send(); err != nil || !strings.HasPrefix(res, "sharing ") || len(Sent(c.WS)) != 0 {
+			t.Fatalf("share %q id %q: %q %v", c.WS.LoadConfig().Share, c.WS.LoadConfig().InstallID, res, err)
+		}
+	}
+}
+
+// A malformed address or a copy that can't be kept fails the job and keeps
+// the batch.
+func TestBrokenSendKeepsTheBatch(t *testing.T) {
+	c := sharing(t, "http://%")
+	if _, err := (&Module{C: c}).Send(); err == nil || pending(t, c) != 1 {
+		t.Fatalf("malformed url: %v, %d pending", err, pending(t, c))
+	}
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+	defer srv.Close()
+	c = sharing(t, srv.URL)
+	os.WriteFile(filepath.Join(Dir(c.WS), "sent"), nil, 0o600)
+	if _, err := (&Module{C: c}).Send(); err == nil || hits != 0 || pending(t, c) != 1 {
+		t.Fatalf("no copy: %v, %d requests, %d pending", err, hits, pending(t, c))
+	}
+}
+
+// A doctor failure noted while a batch is on its way waits for the next one.
+func TestNotedDuringSendWaits(t *testing.T) {
+	var c *core.Core
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		Note(c.WS, Failure{Kind: "doctor", Text: "B"})
+	}))
+	defer srv.Close()
+	c = sharing(t, srv.URL)
+	if res, err := (&Module{C: c}).Send(); err != nil || len(Sent(c.WS)) != 1 {
+		t.Fatalf("send: %q %v", res, err)
+	}
+	if p, _, _ := (&Module{C: c}).Build(c.WS.LoadConfig()); len(p.Failures) != 1 || p.Failures[0].Text != "B" {
+		t.Fatalf("want B waiting, got %+v", p.Failures)
 	}
 }

@@ -20,7 +20,7 @@ import (
 )
 
 // DefaultURL receives reports unless the config names another.
-const DefaultURL = "https://hive-api.ihsan.cc/v1/report"
+const DefaultURL = "https://hive.ihsan.cc/api/report"
 
 // Size caps, as docs/report.md states them.
 const (
@@ -74,7 +74,7 @@ func outbox(ws core.Workspace) string { return filepath.Join(Dir(ws), "outbox.js
 
 // Note keeps a failure seen outside the daemon (the doctor) for the next batch.
 func Note(ws core.Workspace, f Failure) {
-	if ws.LoadConfig().Share != "" {
+	if _, on := ws.LoadConfig().Sharing(); on {
 		f.At = time.Now().UTC()
 		core.AppendJSONL(outbox(ws), f)
 	}
@@ -92,34 +92,52 @@ func URL(cfg core.Config) string {
 // the Hive: an unreachable address leaves the batch for next time.
 func (m *Module) Send() (string, error) {
 	cfg := m.C.WS.LoadConfig()
-	if cfg.Share == "" {
+	if _, on := cfg.Sharing(); !on {
 		return "sharing is off", nil
 	}
 	if cfg.InstallID == "" {
-		cfg.InstallID = core.NewUUID()
-		m.C.WS.SaveConfig(cfg)
+		return "sharing has no install id; `" + core.Cmd + " report on` makes one", nil
 	}
-	p, seq := m.Build(cfg)
+	p, seq, read := m.Build(cfg)
 	if p.Usage == (Usage{}) && len(p.Failures) == 0 {
 		return "nothing new", nil
 	}
 	raw := encode(&p)
-	req, _ := http.NewRequest("POST", URL(cfg), bytes.NewReader(raw))
+	req, err := http.NewRequest("POST", URL(cfg), bytes.NewReader(raw))
+	if err != nil {
+		return "", fmt.Errorf("share_url: %v", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "hive/"+core.Version)
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		return "couldn't reach " + URL(cfg) + "; will try again", nil
-	}
-	resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Sprintf("%s answered %d; will try again", URL(cfg), resp.StatusCode), nil
-	}
+	// The copy is kept before the batch leaves, so nothing goes out unrecorded.
 	name := filepath.Join(Dir(m.C.WS), "sent", core.NewID()+".json")
-	core.WriteFileAtomic(name, raw, 0o600)
-	os.Remove(outbox(m.C.WS))
+	if err := core.WriteFileAtomic(name, raw, 0o600); err != nil {
+		return "", fmt.Errorf("keeping a copy of the batch: %v", err)
+	}
+	res := "couldn't reach " + URL(cfg) + "; will try again"
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err == nil {
+		resp.Body.Close()
+		res = fmt.Sprintf("%s answered %d; will try again", URL(cfg), resp.StatusCode)
+	}
+	if err != nil || resp.StatusCode/100 != 2 {
+		os.Remove(name)
+		return res, nil
+	}
+	trim(outbox(m.C.WS), read)
 	m.C.J.MustAppend("report.sent", map[string]any{"seq": seq, "file": filepath.Base(name), "failures": len(p.Failures)})
 	return fmt.Sprintf("sent %d failures", len(p.Failures)), nil
+}
+
+// trim drops the first n bytes of the outbox, the part a batch carried, and
+// keeps what was noted since.
+func trim(path string, n int) {
+	raw, _ := os.ReadFile(path)
+	if len(raw) <= n {
+		os.Remove(path)
+		return
+	}
+	core.WriteFileAtomic(path, raw[n:], 0o600)
 }
 
 // encode marshals p, dropping the newest failures until it fits the cap.
@@ -134,9 +152,10 @@ func encode(p *Payload) []byte {
 }
 
 // Build reads the journal since the last batch, from when sharing was turned
-// on, and returns the batch and the last event seq it covers.
-func (m *Module) Build(cfg core.Config) (Payload, int64) {
-	since, _ := time.Parse(time.RFC3339, cfg.Share)
+// on, and returns the batch, the last event seq it covers and how many bytes
+// of the outbox it read.
+func (m *Module) Build(cfg core.Config) (Payload, int64, int) {
+	since, _ := cfg.Sharing()
 	p := Payload{Schema: Schema, Install: cfg.InstallID, Sent: time.Now().UTC(), Version: core.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Harness: cfg.Harness, Failures: []Failure{}}
 	var last, seq int64
 	roles := map[string]string{}
@@ -236,17 +255,19 @@ func (m *Module) Build(cfg core.Config) (Payload, int64) {
 			running = false
 		}
 	}
-	core.ReadJSONL(outbox(m.C.WS), func(raw []byte) {
+	box, _ := os.ReadFile(outbox(m.C.WS))
+	box = box[:bytes.LastIndexByte(box, '\n')+1] // a line still being written waits
+	for _, line := range bytes.Split(box, []byte("\n")) {
 		var f Failure
-		if json.Unmarshal(raw, &f) == nil {
+		if json.Unmarshal(line, &f) == nil {
 			add(f.At, f.Kind, "", f.Text, f.Excerpt)
 		}
-	})
+	}
 	sort.SliceStable(p.Failures, func(i, j int) bool { return p.Failures[i].At.Before(p.Failures[j].At) })
 	if len(p.Failures) > maxFailures {
 		p.Failures = p.Failures[len(p.Failures)-maxFailures:]
 	}
-	return p, seq
+	return p, seq, len(box)
 }
 
 // Sent lists the copies of sent batches, oldest first.

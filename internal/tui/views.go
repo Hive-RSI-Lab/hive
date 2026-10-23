@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -653,8 +652,8 @@ func (m *model) settings() []setting {
 		auto = "on"
 	}
 	share := "off"
-	if c.Share != "" {
-		share = "on since " + c.Share
+	if since, on := c.Sharing(); on {
+		share = "on since " + since.Format("2006-01-02 15:04")
 	}
 	sandboxVal := c.Sandbox
 	if m.st.Sandbox != "" {
@@ -729,10 +728,8 @@ func (m *model) keySettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			c.AutoUpdate = !c.AutoUpdate
 			return m, m.post("/api/config", c, "auto-update changed")
 		case "share":
-			c.Share = ""
-			if m.st.Config.Share == "" {
-				c.Share = time.Now().UTC().Format(time.RFC3339)
-			}
+			_, on := m.st.Config.Sharing()
+			c.SetShare(!on)
 			return m, m.post("/api/config", c, "sharing changed")
 		case "sandbox":
 			if c.Sandbox == "bare" {

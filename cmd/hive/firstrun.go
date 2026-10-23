@@ -60,7 +60,7 @@ func firstRun() int {
 		return 1
 	}
 
-	if err := setShare(ws, strings.HasPrefix(strings.ToLower(setup.Prompt("\n"+fmt.Sprintf(shareQuestion, core.Cmd), "n")), "y")); err != nil {
+	if err := askShare(ws); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
