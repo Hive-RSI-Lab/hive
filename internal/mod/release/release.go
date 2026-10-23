@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,20 +39,30 @@ func AssetName(goos, goarch string) string {
 
 // Check returns the newest release, and where it is, if it is newer than this
 // build. It looks at the Hive's releases and at the Hive's own project, so a
-// change the person's Hive released on their fork is the next update.
+// change the person's Hive released on their fork is the next update. Only
+// release_repo and the person's own fork of it are followed, never a
+// repository an agent named, and a release without this platform's binary
+// and checksums is passed over.
 func (m *Module) Check() (repo, tag string, newer bool, err error) {
-	repos := []string{m.C.WS.LoadConfig().ReleaseRepo}
-	for _, p := range m.C.Projects.List() {
-		if p.Self && p.Repo != repos[0] {
-			repos = append(repos, p.Repo)
+	f, up := m.C.Effects.Forge, m.C.WS.LoadConfig().ReleaseRepo
+	repos := []string{up}
+	if user, e := f.User(); e == nil {
+		fork := user + "/" + up[strings.LastIndex(up, "/")+1:]
+		for _, p := range m.C.Projects.List() {
+			if p.Self && p.Repo == fork && fork != up {
+				repos = append(repos, fork)
+			}
 		}
 	}
 	for i, r := range repos {
-		rel, e := m.C.Effects.Forge.LatestRelease(r)
+		rel, e := f.LatestRelease(r)
 		if e != nil {
 			if i == 0 {
 				err = e
 			}
+			continue
+		}
+		if !slices.Contains(rel.Assets, "checksums.txt") || !slices.Contains(rel.Assets, AssetName(runtime.GOOS, runtime.GOARCH)) {
 			continue
 		}
 		if tag == "" || modules.Newer(tag, rel.Tag) {
@@ -193,8 +204,8 @@ func fileSum(path string) (string, error) {
 // AfterKept cuts a release when a kept merge lands in the Hive's own project
 // and its dry run passes on that exact commit. The release numbers on from
 // this build, so the install switches to it at its next update. In the
-// person's fork it also offers the change upstream, one pull request that
-// grows with each kept merge.
+// person's fork it also asks the person whether to offer the change upstream,
+// one pull request that grows with each kept merge.
 func (m *Module) AfterKept(project, sha string) {
 	p, ok := m.C.Projects.Get(project)
 	if !ok || !p.Self {
@@ -226,13 +237,35 @@ func (m *Module) AfterKept(project, sha string) {
 		return
 	}
 	head := strings.SplitN(p.Repo, "/", 2)[0] + ":" + p.Branch
-	pr, err := f.CreatePR(up, head, f.DefaultBranch(up), "Improvements from "+p.Repo,
-		"Changes the Hive made to itself in "+p.Repo+", each kept by its tests, review and dry run. Released there as "+next+".")
-	if err != nil {
-		m.C.J.MustAppend("alert.raised", map[string]string{"kind": "release", "project": project, "text": "offering the change upstream failed: " + err.Error()})
+	if _, open, _ := f.FindPR(up, head); open {
+		return // the open pull request grows with the branch
+	}
+	// A pull request on someone else's repository goes out in the person's
+	// name, so it waits for their yes.
+	m.C.Person.Ask(core.Ask{Kind: "upstream", Ref: head, Project: project,
+		Title:  "Offer the Hive's changes to " + up + "?",
+		Detail: "The Hive released " + next + " on " + p.Repo + ". Yes opens one pull request on " + up + " in your name, which grows with each kept change."})
+}
+
+// New is the release module, with the person's answer to an upstream offer.
+func New(c *core.Core) *Module {
+	m := &Module{C: c}
+	c.Person.Handle("upstream", m.onUpstream)
+	return m
+}
+
+func (m *Module) onUpstream(a core.Ask) {
+	if a.Answer != "yes" {
 		return
 	}
-	m.C.J.MustAppend("hive.offered", map[string]string{"project": project, "pr": pr.URL})
+	f, up := m.C.Effects.Forge, m.C.WS.LoadConfig().ReleaseRepo
+	pr, err := f.CreatePR(up, a.Ref, f.DefaultBranch(up), "Improvements from "+a.Project,
+		"Changes the Hive made to itself, each kept by its tests, review and dry run.")
+	if err != nil {
+		m.C.J.MustAppend("alert.raised", map[string]string{"kind": "release", "project": a.Project, "text": "offering the change upstream failed: " + err.Error()})
+		return
+	}
+	m.C.J.MustAppend("hive.offered", map[string]string{"project": a.Project, "pr": pr.URL})
 }
 
 func bump(tag string) string {

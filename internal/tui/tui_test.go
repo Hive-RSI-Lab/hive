@@ -121,13 +121,16 @@ func TestSchedulesAreHours(t *testing.T) {
 			t.Errorf("scheduleText(%q) = %q, want %q", stored, got, shown)
 		}
 	}
-	for typed, stored := range map[string]string{"12": "every 12h", "12 hours": "every 12h", "0": "off", "off": "off"} {
+	for typed, stored := range map[string]string{"12": "every 12h", "12 hours": "every 12h", "0": "off", "off": "off",
+		scheduleText("daily 04:00"): "daily 04:00", "daily 05:30": "daily 05:30", " every  90m ": "every 90m"} {
 		if got, err := scheduleHours(typed); err != nil || got != stored {
 			t.Errorf("scheduleHours(%q) = %q, %v, want %q", typed, got, err, stored)
 		}
 	}
-	if _, err := scheduleHours("daily"); err == nil {
-		t.Error("scheduleHours took words")
+	for _, bad := range []string{"daily", "daily 25:00", "-3"} {
+		if _, err := scheduleHours(bad); err == nil {
+			t.Errorf("scheduleHours took %q", bad)
+		}
 	}
 }
 
@@ -154,6 +157,12 @@ func TestModelIsAPickList(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), custom) {
 		t.Fatal("the open list does not show the custom entry")
+	}
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("q")}, {Type: tea.KeyTab}} {
+		if _, cmd := m.Update(k); m.picking || m.section != secSettings || cmd != nil {
+			t.Fatalf("%v should close the open list and stay in Settings", k)
+		}
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyUp}) // already at the top
 	for range len(m.settings()[m.setSel].choices) {

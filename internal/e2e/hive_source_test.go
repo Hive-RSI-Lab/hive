@@ -51,6 +51,7 @@ func TestHiveKnowsItself(t *testing.T) {
 	h.quiesce()
 	h.kill()
 	os.WriteFile(filepath.Join(self, "VERSION"), []byte("v0.0.1\n"), 0o644)
+	os.WriteFile(filepath.Join(self, ".source-hash"), []byte("the hash of v0.0.1's source"), 0o644)
 	os.WriteFile(filepath.Join(self, "internal", "gone.go"), []byte("package gone\n"), 0o644)
 	core.Git(h.ws.KB(), "add", "-A")
 	core.Git(h.ws.KB(), "commit", "-q", "-m", "the Hive's source at v0.0.1")

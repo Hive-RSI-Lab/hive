@@ -16,6 +16,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 	"github.com/ihsan-sa/hive-standalone-build/internal/harness"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/improve"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/system"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
@@ -675,13 +676,17 @@ func scheduleText(s string) string {
 }
 
 // scheduleHours turns hours typed in Settings into the stored form; 0 is off.
+// A form the scheduler already reads ("daily 04:00", "every 90m") is kept as typed.
 func scheduleHours(v string) (string, error) {
+	if _, err := system.Parse(v); err == nil {
+		return strings.Join(strings.Fields(v), " "), nil
+	}
 	n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(v), " hours"))
 	switch {
-	case v == "off" || err == nil && n == 0:
+	case err == nil && n == 0:
 		return "off", nil
 	case err != nil || n < 0:
-		return "", fmt.Errorf("a schedule is a number of hours, or 0 for off")
+		return "", fmt.Errorf("a schedule is a number of hours, daily HH:MM, or 0 for off")
 	}
 	return fmt.Sprintf("every %dh", n), nil
 }

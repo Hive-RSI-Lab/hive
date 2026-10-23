@@ -128,8 +128,8 @@ func TestDoneProjectGone(t *testing.T) {
 }
 
 // A lead with no project of its own must name one even when only one exists,
-// since the ask may be a module or about the Hive itself; a project's own
-// agents file to their project.
+// since the ask may be a module or about the Hive itself; a sweep files to the
+// only project, and a project's own agents file to their project.
 func TestBriefNamesItsProject(t *testing.T) {
 	m, _, _, _ := noCommitRig(t, 0)
 	_, err := m.opBrief(core.Run{ID: "lead", Role: "lead"}, []byte(`{"title":"a cost ledger"}`))
@@ -139,10 +139,13 @@ func TestBriefNamesItsProject(t *testing.T) {
 	if len(m.List(nil)) != 0 {
 		t.Fatal("a refused brief filed a task")
 	}
+	if _, err := m.opBrief(core.Run{ID: "s", Role: "sweep"}, []byte(`{"title":"a sweep finding"}`)); err != nil {
+		t.Fatalf("a sweep with one project to file in was refused: %v", err)
+	}
 	if _, err := m.opBrief(core.Run{ID: "w", Role: "worker", Project: "p"}, []byte(`{"title":"a follow-up"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if ts := m.List(nil); len(ts) != 1 || ts[0].Project != "p" {
-		t.Fatalf("want one task in p, got %+v", ts)
+	if ts := m.List(nil); len(ts) != 2 || ts[0].Project != "p" || ts[1].Project != "p" {
+		t.Fatalf("want two tasks in p, got %+v", ts)
 	}
 }

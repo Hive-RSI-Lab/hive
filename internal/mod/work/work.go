@@ -215,8 +215,12 @@ func (m *Module) opBrief(r core.Run, args json.RawMessage) (any, error) {
 	if b.Project == "" {
 		b.Project = r.Project
 	}
-	// An agent with no project of its own names the target: the only project
-	// is not a safe guess, since the ask may be a module or about the Hive.
+	// An agent with no project of its own names the target. For the lead the
+	// only project is not a safe guess, since the ask may be a module or about
+	// the Hive; a sweep's findings come from the records, so it may be.
+	if ps := m.C.Projects.List(); b.Project == "" && r.Role == "sweep" && len(ps) == 1 {
+		b.Project = ps[0].Name
+	}
 	if b.Project == "" {
 		names := []string{}
 		for _, p := range m.C.Projects.List() {

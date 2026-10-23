@@ -77,8 +77,18 @@ func (g GitHub) EnsureRepo(repo, description string) (bool, error) {
 }
 
 // Fork returns the person's fork of repo, creating it if they have none.
+// GitHub answers before a new fork's branches exist, so it waits for them,
+// up to a minute, and the first clone finds them.
 func (GitHub) Fork(repo string) (string, error) {
-	return gh("api", "-X", "POST", "repos/"+repo+"/forks", "-q", ".full_name")
+	fork, err := gh("api", "-X", "POST", "repos/"+repo+"/forks", "-q", ".full_name")
+	for i := 0; err == nil && i < 20; i++ {
+		out, e := GitT(time.Minute, "", "-c", "credential.helper=", "-c", "credential.helper="+ghHelper(), "ls-remote", "--heads", "https://github.com/"+fork+".git")
+		if e == nil && strings.TrimSpace(out) != "" {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return fork, err
 }
 
 // ghHelper is git's credential helper backed by the person's gh login, so

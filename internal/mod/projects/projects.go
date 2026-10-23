@@ -54,6 +54,9 @@ func (m *Module) opCreate(r core.Run, args json.RawMessage) (any, error) {
 	if err := core.Bind(args, &s); err != nil {
 		return nil, err
 	}
+	if s.Self {
+		s.Repo = "" // an agent never picks where the Hive's own code lives
+	}
 	p, created, err := m.Create(s)
 	if err != nil {
 		return nil, err

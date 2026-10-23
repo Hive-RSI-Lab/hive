@@ -14,7 +14,9 @@ import (
 // path (issue, branch, PR, pinned squash merge) runs without the network.
 type Local struct {
 	Dir string
-	mu  sync.Mutex
+	// ReleaseAssets are the asset names every release it cuts lists.
+	ReleaseAssets []string
+	mu            sync.Mutex
 }
 
 type localState struct {
@@ -276,7 +278,7 @@ func (l *Local) CreateRelease(repo, tag, sha, notes string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	s := l.load()
-	s.Releases[repo] = append(s.Releases[repo], Release{Tag: tag})
+	s.Releases[repo] = append(s.Releases[repo], Release{Tag: tag, Assets: l.ReleaseAssets})
 	l.save(s)
 	return nil
 }

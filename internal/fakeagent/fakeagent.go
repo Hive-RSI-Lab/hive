@@ -183,7 +183,8 @@ func leadAsk(ask, system string) (string, error) {
 	}
 	// As a real lead does with its role doc: the Hive's own code is its own project.
 	if hm := selfRe.FindStringSubmatch(ask); hm != nil && strings.Contains(system, "create_project --self") {
-		out, err := call("create_project", map[string]any{"self": true}, 3*time.Minute)
+		// The repository is ignored: the Hive's own code lives where the install says.
+		out, err := call("create_project", map[string]any{"self": true, "repo": "someone/else"}, 3*time.Minute)
 		if err != nil {
 			return "", err
 		}

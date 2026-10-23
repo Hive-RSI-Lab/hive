@@ -1,6 +1,8 @@
 package kb
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"go/doc"
 	"go/parser"
@@ -18,12 +20,26 @@ import (
 // SelfDir is where the Hive's own source sits in the knowledge base.
 const SelfDir = "hive"
 
-// seedSelf writes the Hive's source and design into the knowledge base at the
+// SeedSelf writes the Hive's source and design into the knowledge base at the
 // running version, with a source map, so every agent can read the code it
-// runs. It runs at every start, so an update (a new binary) reseeds it, and a
-// commit is made only when something changed.
-func (m *Module) seedSelf(src fs.FS) {
+// runs. The daemon calls it at start; it rewrites and commits only when the
+// source differs from what it last wrote, so an update (a new binary) reseeds.
+func (m *Module) SeedSelf(src fs.FS) {
 	dir := filepath.Join(m.C.WS.KB(), SelfDir)
+	h := sha256.New()
+	fmt.Fprintln(h, core.Version)
+	fs.WalkDir(src, ".", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			raw, _ := fs.ReadFile(src, p)
+			fmt.Fprintf(h, "%s %d\n", p, len(raw))
+			h.Write(raw)
+		}
+		return err
+	})
+	sum := hex.EncodeToString(h.Sum(nil))
+	if old, _ := os.ReadFile(filepath.Join(dir, ".source-hash")); string(old) == sum {
+		return
+	}
 	os.RemoveAll(dir)
 	fs.WalkDir(src, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -38,6 +54,7 @@ func (m *Module) seedSelf(src fs.FS) {
 	})
 	os.WriteFile(filepath.Join(dir, "VERSION"), []byte(core.Version+"\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "SOURCE-MAP.md"), []byte(sourceMap(src)), 0o644)
+	os.WriteFile(filepath.Join(dir, ".source-hash"), []byte(sum), 0o644)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	core.Git(m.C.WS.KB(), "add", "-A", SelfDir)
@@ -48,7 +65,7 @@ func (m *Module) seedSelf(src fs.FS) {
 func sourceMap(src fs.FS) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# The Hive's own source, at %s\n\n", core.Version)
-	b.WriteString("This folder is the Hive's repository at the version this install runs, rewritten at every start. Read the code here to answer how the Hive works, and the live settings in `hive agent status` (`config`). The design: `docs/spec.md`, `docs/architecture.md`, `docs/risk.md`, `docs/status.md`. The default modules (role prompts) are in `modules/`.\n\n## Packages\n\n")
+	b.WriteString("This folder is the Hive's repository at the version this install runs, rewritten when the Hive is updated. Read the code here to answer how the Hive works, and the live settings in `hive agent status` (`config`). The design: `docs/spec.md`, `docs/architecture.md`, `docs/risk.md`, `docs/status.md`. The default modules (role prompts) are in `modules/`.\n\n## Packages\n\n")
 	synopsis := map[string]string{}
 	fs.WalkDir(src, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {

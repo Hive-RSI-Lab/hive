@@ -296,6 +296,10 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.composing || m.editing {
 		return m.keyInput(k)
 	}
+	if m.picking && (s == "q" || s == "tab" || s == "shift+tab") {
+		m.picking = false // these close an open pick-list first
+		return m, nil
+	}
 	switch s {
 	case "q":
 		m.saveSeq()
