@@ -72,6 +72,8 @@ type model struct {
 	msgs      map[string][]chat.Message
 	input     textarea.Model
 	composing bool              // keys go to the text box
+	files     []chat.File       // attached to the message being written
+	composeN  int               // counts composes, so a clipboard read can't land in a later one
 	sent      int               // messages sent, to match answers
 	reply     string            // thread being replied to; "" = new thread
 	drafts    map[string]string // by chat and target
@@ -338,6 +340,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case flashMsg:
 		m.setFlash(string(msg))
 		return m, m.fetchState()
+	case clipMsg:
+		switch {
+		case msg.text != nil:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg.text)
+			return m, cmd
+		case msg.compose != m.composeN || !m.composing:
+			// read for a message that has since been sent or dropped
+		case msg.err != nil:
+			m.setFlash(msg.err.Error())
+		default:
+			m.files = append(m.files, msg.f)
+		}
 	case tea.KeyMsg:
 		return m.key(msg)
 	case tea.MouseMsg:
@@ -386,6 +401,15 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.composing {
 		return m.keyInput(k)
+	}
+	if k.Paste && m.section == secChats && m.chat != "" { // a drop starts a message and attaches to it
+		m.focus = 1
+		if m.thread != "" {
+			m.focus = 2
+		}
+		focus := m.focusBox(m.thread)
+		_, cmd := m.keyInput(k)
+		return m, tea.Batch(focus, cmd)
 	}
 	switch s {
 	case "q":
@@ -530,10 +554,41 @@ func (m *model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			return m, m.saveSetting(text)
 		}
-		if text == "" {
+		if text == "" && len(m.files) == 0 {
 			return m, nil
 		}
 		return m, m.send(text)
+	case "ctrl+v", "alt+v":
+		// As in Claude Code: an image on the clipboard attaches; otherwise
+		// ctrl+v pastes text as before.
+		if m.composing {
+			return m, readClipboard(true, m.composeN)
+		}
+	}
+	if m.composing && k.Paste {
+		// A drop arrives as a pasted path; an empty paste may be an image.
+		if len(k.Runes) == 0 {
+			return m, readClipboard(false, m.composeN)
+		}
+		if paths := pastedPaths(string(k.Runes)); paths != nil {
+			maxMB := m.st.Config.ChatMaxMB
+			if maxMB <= 0 { // no state yet
+				maxMB = core.DefaultConfig().ChatMaxMB
+			}
+			var have int64
+			for _, f := range m.files {
+				have += int64(len(f.Data))
+			}
+			for _, p := range paths {
+				f, err := readAttachment(p, have, maxMB)
+				if err != nil {
+					return m, flash("error: " + err.Error())
+				}
+				m.files = append(m.files, f)
+				have += int64(len(f.Data))
+			}
+			return m, nil
+		}
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
@@ -544,14 +599,39 @@ func (m *model) keyInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) send(text string) tea.Cmd {
 	m.sent++
 	o := outMsg{n: m.sent, chat: m.chat, thread: m.reply, text: text}
+	files := m.files
+	m.files, m.composeN = nil, m.composeN+1 // a clipboard read still running was for the sent message
 	m.drafts[o.chat+"\x00"+o.thread] = ""
 	if o.thread != "" {
 		m.outbox = append(m.outbox, o)
 	}
 	return func() tea.Msg {
 		var msg chat.Message
-		err := m.c.Do("POST", "/api/chat", map[string]string{"chat": o.chat, "thread": o.thread, "text": text}, &msg)
+		err := m.c.Do("POST", "/api/chat", map[string]any{"chat": o.chat, "thread": o.thread, "text": text, "files": files}, &msg)
 		return sentMsg{o, msg, err}
+	}
+}
+
+func flash(s string) tea.Cmd { return func() tea.Msg { return flashMsg(s) } }
+
+// clipMsg is a clipboard read: an image to attach, why there is none, or,
+// for ctrl+v with no image, the box's own text paste.
+type clipMsg struct {
+	f       chat.File
+	err     error
+	text    tea.Msg
+	compose int // the compose it was read for
+}
+
+// readClipboard reads the clipboard's image off the UI loop, since a tool
+// like powershell.exe can take seconds.
+func readClipboard(text bool, compose int) tea.Cmd {
+	return func() tea.Msg {
+		f, err := clipboardImage()
+		if text && (err == errNoImage || err == errNoTool) {
+			return clipMsg{text: textarea.Paste(), compose: compose}
+		}
+		return clipMsg{f: f, err: err, compose: compose}
 	}
 }
 

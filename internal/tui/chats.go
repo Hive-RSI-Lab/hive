@@ -311,6 +311,7 @@ func scroll(off int, key string, page int) int {
 func (m *model) focusBox(reply string) tea.Cmd {
 	m.blurBox()
 	m.reply, m.composing = reply, true
+	m.composeN++
 	m.input.SetValue(m.drafts[m.chat+"\x00"+reply])
 	return m.input.Focus()
 }
@@ -319,7 +320,7 @@ func (m *model) blurBox() {
 	if m.composing {
 		m.drafts[m.chat+"\x00"+m.reply] = m.input.Value()
 	}
-	m.composing = false
+	m.composing, m.files = false, nil // a draft keeps its text, not its attachments
 	m.input.Blur()
 }
 
@@ -510,11 +511,16 @@ func (m *model) compose(label, placeholder, reply string, w int) []string {
 		lines[i] = "  " + lines[i]
 	}
 	lines[0] = "›" + lines[0][1:]
-	return box(m.composeLabel(label), lines[:min(len(lines), 8)], w, false)
+	return box(label, lines[:min(len(lines), 8)], w, false)
 }
 
-// composeLabel is the box's label; attachment chips join it here.
-func (m *model) composeLabel(label string) string { return label }
+// composeLabel is the live box's label, with a chip for each attachment.
+func (m *model) composeLabel(label string) string {
+	for _, f := range m.files {
+		label += " · 📎 " + f.Name
+	}
+	return label
+}
 
 // body renders a message's markdown to width w.
 func (m *model) body(text string, w int) []string { return markdown(text, w) }
