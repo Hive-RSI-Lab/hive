@@ -8,9 +8,14 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,6 +86,7 @@ func start(t *testing.T) *hive {
 	}
 	cfg := h.ws.LoadConfig()
 	cfg.Harness, cfg.AutoUpdate = "fake", false
+	cfg.MemFloorMB, cfg.MemPressureMax, cfg.CPUPressureMax = 0, 0, 0 // a loaded CI runner mustn't hold fake turns
 	if hn := os.Getenv("HIVE_E2E_HARNESS"); hn != "" {
 		cfg.Harness = hn // a live probe: real agents, plan usage
 	}
@@ -462,6 +468,38 @@ func TestGateAndLoop(t *testing.T) {
 	})
 }
 
+// A worker isn't blamed for a failure main has too: its change waits with no
+// round spent, main's failure is one alert, and once main is fixed the change
+// is brought up to date and merges.
+func TestMainRedDoesNotBlameWorker(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.seed("me/red", map[string]string{
+		".hive/project.json": `{"test": "grep -q green STATE"}`,
+		".hive/goals.md":     "# Goals\n",
+		".hive/lessons.md":   "# Lessons\n\n",
+		"STATE":              "red\n",
+	})
+	h.post("/api/project", map[string]any{"name": "red", "repo": "me/red"}, nil)
+	h.post("/api/ask", map[string]string{"project": "red", "title": "add a feature", "known": "a plain change"}, nil)
+	st := h.wait("the change to wait on main", 4*minute, func(st api.State) bool {
+		tk, ok := task(st, "red", "add a feature")
+		return ok && strings.HasPrefix(tk.Reason, "waiting on main")
+	})
+	tk, _ := task(st, "red", "add a feature")
+	alerts := 0
+	for _, a := range st.Alerts {
+		if a.Kind == "main-red" {
+			alerts++
+		}
+	}
+	if tk.Round != 0 || alerts != 1 {
+		t.Fatalf("round %d, %d main-red alerts; want 0 and 1", tk.Round, alerts)
+	}
+	h.seed("me/red", map[string]string{"STATE": "green\n"})
+	h.wait("the change to merge once main is green", 4*minute, taskStage("red", "add a feature", work.StageDone))
+}
+
 // M7: kill the Hive in the middle of an ask, restart, and get the same
 // outcome with no duplicate issue, run or PR. Usage limits park and resume;
 // a crashed turn is retried on its checkout.
@@ -523,9 +561,22 @@ func TestRecovery(t *testing.T) {
 	h.wait("the crashed run to be retried and land", 3*minute, taskStage("rec", "crash once", work.StageDone))
 }
 
+// toldAbout waits for a "told" ask whose title names what was decided.
+func toldAbout(what string) func(api.State) bool {
+	return func(st api.State) bool {
+		for _, a := range st.Asks {
+			if a.Kind == "told" && strings.Contains(a.Title, what) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // A request past the sandbox goes to a warden, which runs its script, and the
-// outcome reaches the agent. A module installs from a git URL only on the person's approval and
-// updates when its source releases. The Hive releases itself after a kept merge.
+// outcome reaches the agent. At autonomy 2 a warden approves a module install
+// and a goals change, and the person is told after. A module updates when its
+// source releases. The Hive releases itself after a kept merge.
 func TestPersonModulesRelease(t *testing.T) {
 	t.Parallel()
 	h := start(t)
@@ -552,19 +603,6 @@ func TestPersonModulesRelease(t *testing.T) {
 	git(src, "commit", "-q", "-m", "v1")
 	git(src, "tag", "v1.0.0")
 	h.post("/api/chat", map[string]string{"chat": "lead", "text": "install module " + src}, nil)
-	st := h.wait("the module install to reach the person", 2*minute, func(st api.State) bool {
-		for _, a := range st.Asks {
-			if a.Kind == "module" {
-				return true
-			}
-		}
-		return false
-	})
-	for _, a := range st.Asks {
-		if a.Kind == "module" {
-			h.post("/api/answer", map[string]string{"id": a.ID, "answer": "install"}, nil)
-		}
-	}
 	module := func(st api.State) (api.ModuleView, bool) {
 		for _, m := range st.Modules {
 			if m.Name == "tools" {
@@ -573,7 +611,11 @@ func TestPersonModulesRelease(t *testing.T) {
 		}
 		return api.ModuleView{}, false
 	}
-	h.wait("the module to install at v1.0.0", minute, func(st api.State) bool { m, ok := module(st); return ok && m.Release == "v1.0.0" })
+	h.wait("a warden to install the module at v1.0.0", 2*minute, func(st api.State) bool { m, ok := module(st); return ok && m.Release == "v1.0.0" })
+	h.wait("the person to be told after", minute, toldAbout("Install module tools"))
+	h.post("/api/ask", map[string]string{"project": "self", "title": "write down a goal", "known": "FAKE:goals"}, nil)
+	h.wait("a warden to approve the goals change and it to merge", 3*minute, taskStage("self", "write down a goal", work.StageDone))
+	h.wait("the person to be told after", minute, toldAbout("write down a goal"))
 	os.WriteFile(filepath.Join(src, "tool.sh"), []byte("echo hi\n"), 0o644)
 	git(src, "add", "-A")
 	git(src, "commit", "-q", "-m", "v1.1")
@@ -900,6 +942,57 @@ func TestLiveTribunal(t *testing.T) {
 	if panels == 0 {
 		t.Error("no tribunal convened")
 	}
+}
+
+// redSquare is a small PNG for the attachment tests.
+func redSquare() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 0, 0, 255}}, image.Point{}, draw.Src)
+	var b bytes.Buffer
+	png.Encode(&b, img)
+	return b.Bytes()
+}
+
+// TestChatAttachment: a pasted image and a dropped file reach the lead as
+// files in its run dir, named in its prompt, and it opens both.
+func TestChatAttachment(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	files := []chat.File{{Name: "shot.png", Data: redSquare()}, {Name: "notes.txt", Data: []byte("hello from a file\n")}}
+	var sent chat.Message
+	h.post("/api/chat", map[string]any{"chat": "lead", "text": "what are these?", "files": files}, &sent)
+	if !strings.Contains(sent.Text, "📎 shot.png") || !strings.Contains(sent.Text, "📎 notes.txt") {
+		t.Fatalf("the message shows no attachments: %q", sent.Text)
+	}
+	h.wait("the lead to open both", 2*minute, h.replied("lead", "shot.png (image/png"))
+	h.wait("the lead to open the text", minute, h.replied("lead", "notes.txt (text/plain"))
+	// Over chat_max_mb the daemon refuses the POST and says which setting raises it.
+	cfg := h.ws.LoadConfig()
+	cfg.ChatMaxMB = 1
+	h.ws.SaveConfig(cfg)
+	err := h.c.Do("POST", "/api/chat", map[string]any{"chat": "lead", "files": []chat.File{{Name: "big.bin", Data: make([]byte, 2<<20)}}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "over the 1 MB limit; chat_max_mb") {
+		t.Fatalf("an oversized message: %v", err)
+	}
+}
+
+// TestLiveAttachment is TestChatAttachment's host probe: run it with
+// HIVE_E2E_HARNESS=claude. A real lead is sent a red square and names its colour.
+func TestLiveAttachment(t *testing.T) {
+	if os.Getenv("HIVE_E2E_HARNESS") == "" {
+		t.Skip("set HIVE_E2E_HARNESS=claude to run real agents")
+	}
+	h := start(t)
+	h.post("/api/chat", map[string]any{"chat": "lead", "text": "What colour is the attached image? Answer in one word.", "files": []chat.File{{Name: "square.png", Data: redSquare()}}}, nil)
+	h.wait("the lead to name the colour", 15*minute, func(api.State) bool {
+		for _, m := range h.messages("lead") {
+			if m.From != "person" && strings.Contains(strings.ToLower(m.Text), "red") {
+				t.Logf("lead: %q", m.Text)
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // A score that stops moving gets a step-back: the agent designs a simpler

@@ -24,6 +24,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/api"
 	"github.com/ihsan-sa/hive-standalone-build/internal/app"
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/projects"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/release"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
@@ -129,6 +130,9 @@ func Run(ws core.Workspace, waitFor int) error {
 		return err
 	}
 	defer a.Close()
+	if _, err := ws.ReadConfig(); err != nil {
+		fmt.Fprintln(os.Stderr, "settings:", err)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -238,14 +242,18 @@ func (s *server) routes() http.Handler {
 	h("/api/state", func(*http.Request) (any, error) { return s.state(), nil })
 	h("/api/chat", func(r *http.Request) (any, error) {
 		if r.Method == http.MethodPost {
-			var b struct{ Chat, Thread, Text string }
+			var b struct {
+				Chat, Thread, Text string
+				Files              []chat.File
+			}
+			r.Body = chat.Limit(r.Body, a.C.WS.LoadConfig().ChatMaxMB)
 			if err := decode(r, &b); err != nil {
 				return nil, err
 			}
 			if b.Chat == "" {
 				b.Chat = "lead"
 			}
-			return a.Chat.Post(b.Chat, b.Thread, b.Text)
+			return a.Chat.Post(b.Chat, b.Thread, b.Text, b.Files...)
 		}
 		return a.Chat.Messages(r.URL.Query().Get("id")), nil
 	})
@@ -332,7 +340,13 @@ func (s *server) routes() http.Handler {
 	})
 	h("/api/config", func(r *http.Request) (any, error) {
 		if r.Method != http.MethodPost {
-			return a.C.WS.LoadConfig(), nil
+			// What config.json got wrong rides beside every setting that did read.
+			c, err := a.C.WS.ReadConfig()
+			out := api.ConfigView{Config: c}
+			if err != nil {
+				out.LoadError = err.Error()
+			}
+			return out, nil
 		}
 		var c core.Config
 		if err := decode(r, &c); err != nil {
@@ -402,7 +416,8 @@ func decode(r *http.Request, v any) error {
 
 func (s *server) state() api.State {
 	a := s.a
-	st := api.State{Version: core.Version, Seq: a.C.J.Seq(), Workspace: a.C.WS.Root, Config: a.C.WS.LoadConfig()}
+	cfg, cfgErr := a.C.WS.ReadConfig()
+	st := api.State{Version: core.Version, Seq: a.C.J.Seq(), Workspace: a.C.WS.Root, Config: cfg}
 	if sb, err := a.C.Sandbox(); err != nil {
 		st.SandboxErr = err.Error()
 	} else {
@@ -452,6 +467,10 @@ func (s *server) state() api.State {
 	s.mu.Lock()
 	st.Alerts = append([]api.Alert{}, s.alerts...)
 	s.mu.Unlock()
+	if cfgErr != nil { // live, so it goes once the file is fixed
+		st.ConfigErr = cfgErr.Error()
+		st.Alerts = append(st.Alerts, api.Alert{At: time.Now(), Kind: "settings", Text: cfgErr.Error()})
+	}
 	st.Jobs = a.System.Jobs()
 	st.Wakeups = a.System.Wakeups()
 	for _, m := range a.Mods.List() {
