@@ -343,6 +343,10 @@ func (m *model) viewTree() []string {
 			sel++
 		}
 	}
+	if m.st.Offline != "" {
+		lines = append([]string{stWarn.Render(strings.ToUpper(m.st.Offline[:1]) + m.st.Offline[1:] + "; the work picks up again on its own."), ""}, lines...)
+		sel += 2
+	}
 	if m.st.SandboxErr != "" {
 		lines = append([]string{stBad.Render("Agents can't start: " + core.Clip(m.st.SandboxErr, 200)), ""}, lines...)
 		sel += 2
@@ -700,6 +704,11 @@ func (m *model) settings() []setting {
 		{group: "General", label: "WSL distro", value: c.WSLDistro, key: "wsl_distro"},
 		{group: "General", label: "auto-update", value: auto, key: "auto_update"},
 		{group: "General", label: "release repo", value: c.ReleaseRepo, key: "release_repo"},
+		{group: "General", label: "release", value: pinText(c.ReleasePin), action: func() tea.Cmd {
+			return func() tea.Msg {
+				return flashMsg("`" + core.Cmd + " update --release <tag>` installs and pins a release")
+			}
+		}},
 		{group: "Agents", label: "harness", value: c.Harness, key: "harness"},
 		{group: "Agents", label: "model", value: c.Model, key: "model"},
 		{group: "Agents", label: "lead model", value: c.LeadModel, key: "lead_model"},
@@ -714,6 +723,13 @@ func (m *model) settings() []setting {
 		setting{group: "Log in", label: "GitHub", value: "runs the GitHub CLI's own login", action: func() tea.Cmd { return login("gh", "auth", "login") }},
 	)
 	return s
+}
+
+func pinText(pin string) string {
+	if pin == "" {
+		return "the newest"
+	}
+	return "pinned to " + pin + ", auto-update off (`" + core.Cmd + " update` goes back to the newest)"
 }
 
 func autonomyText(n int) string {

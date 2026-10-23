@@ -100,6 +100,8 @@ type model struct {
 
 	since     []string
 	showSince bool
+	seen      int64 // the journal seq the person has seen up to, for the update notice
+	notice    *api.Updated
 	help      bool
 }
 
@@ -133,7 +135,13 @@ func Run(c *api.Client, ws core.Workspace) error {
 		lipgloss.SetColorProfile(termenv.ANSI)
 		stBad = stTitle
 	}
-	_, err := tea.NewProgram(newModel(c, ws), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
+	m := newModel(c, ws)
+	var ui struct{ Seq int64 }
+	if raw, err := os.ReadFile(m.uiPath()); err == nil {
+		json.Unmarshal(raw, &ui)
+	}
+	m.seen = ui.Seq
+	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
 
@@ -320,6 +328,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			first := !m.loaded
 			m.err, m.st, m.loaded = "", msg.st, true
+			if u := msg.st.Updated; u != nil && u.Seq > m.seen {
+				m.notice, m.seen = u, u.Seq
+			}
 			for _, c := range m.st.Chats {
 				if first && m.chat == "" && c.Kind == "lead" { // open on the Hive's lead
 					return m, m.openChat(c.ID)
@@ -358,7 +369,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		s := map[tea.MouseButton]string{tea.MouseButtonWheelUp: "wheelup", tea.MouseButtonWheelDown: "wheeldown"}[msg.Button]
 		switch {
-		case s == "" || msg.Action != tea.MouseActionPress || m.help || m.showSince:
+		case s == "" || msg.Action != tea.MouseActionPress || m.help || m.showSince || m.notice != nil:
 		case len(m.stack) > 0:
 			if top := &m.stack[len(m.stack)-1]; top.kind == "module" { // the list follows the selection
 				key := "up"
@@ -387,6 +398,10 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.showSince {
 		m.showSince = false
+		return m, nil
+	}
+	if m.notice != nil {
+		m.notice = nil
 		return m, nil
 	}
 	if m.help {
@@ -663,6 +678,8 @@ func (m *model) viewMain(w int) pane {
 	case m.showSince:
 		body = append([]string{"", stTitle.Render("While you were away"), ""}, m.since...)
 		body = append(body, "", stDim.Render("any key to continue"))
+	case m.notice != nil:
+		body = append([]string{"", stTitle.Render("Updated to "+m.notice.To) + stDim.Render("  any key to dismiss"), ""}, strings.Split(m.notice.Notes, "\n")...)
 	case m.help:
 		body = helpLines()
 	case m.section == secChats:

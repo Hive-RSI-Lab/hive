@@ -6,19 +6,19 @@
    Modules        │     WSL distro
  › Settings       │     auto-update                 on
                   │     release repo                ihsan-sa/hive
- ▾ textkit-2      │
-   lead           │   Agents
-   writer         │     harness                     claude
-   reviewer    ●  │     model                       sonnet
- ▾ hive-web       │     lead model                  opus
-   lead        ●  │     reviewer model              opus
-   worker-2       │     review rounds               3
-   reviewer       │
-   tribunal       │   Schedules
- ▸ website        │     hive.update                 every 6h
+ ▾ textkit-2      │     release                     the newest
+   lead           │
+   writer         │   Agents
+   reviewer    ●  │     harness                     claude
+ ▾ hive-web       │     model                       sonnet
+   lead        ●  │     lead model                  opus
+   worker-2       │     reviewer model              opus
+   reviewer       │     review rounds               3
+   tribunal       │
+ ▸ website        │   Schedules
+                  │     hive.update                 every 6h
                   │     improve.stepback            every 72h
                   │     improve.sweep               every 12h
                   │     kb.file                     daily 04:00
-                  │     modules.update              every 24h
 ──────────────────┴─────────────────────────────────────────────────────────────
  ↑↓ move   enter change   tab sidebar
