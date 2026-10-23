@@ -9,7 +9,7 @@ One Go binary, `hive`. A small core plus default modules; the daemon runs both a
 | `internal/core` | **The core.** Journal (append-only event log), workspace + config, runs (agent turns, park/resume, crash retry, reattach), mailbox ops, effects process (git/forge, commit extraction, gate guarantees), project registry, token source, person queue, ceiling notes. ~3k lines. |
 | `internal/sandbox` | Linux namespaces (`sandbox-exec` outer + `sandbox-init` pid 1), WSL launcher (Windows), Seatbelt (macOS, untested), bare (opt-in). Egress proxy. |
 | `internal/harness` | Adapter seam. Claude Code (`claude -p --output-format stream-json`), Codex (`codex exec --json`, in its own read-only or workspace-write sandbox inside ours), fake (scripted). |
-| `internal/proc` | Detached processes; liveness by pid + start time. |
+| `internal/proc` | Detached processes; liveness by pid + start time, and a zombie is dead, though stopping one still signals its group. |
 | `internal/agentcli` | `hive agent <op>`: what agents call from inside the sandbox. |
 | `internal/fakeagent` | `hive fake-agent`: scripted agent for tests and dry runs (FAKE:* keywords). |
 | `internal/mod/*` | Default modules: `agents` (prompts, spawner), `chat`, `work` (ask → merge), `improve` (measure, keep/revert, sweep), `kb` (notes, the record filed from the journal, search), `system` (schedules, wake-ups), `risk` (requests past the sandbox → warden, tribunal or person), `projects`, `modules` (registry, installs, updates, the tick list), `runner` (modules that carry a program), `release` (self-update, self-release). |
