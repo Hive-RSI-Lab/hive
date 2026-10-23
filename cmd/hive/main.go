@@ -184,13 +184,14 @@ func run(args []string) int {
 	case "doctor":
 		return cmdDoctor(args)
 	case "update":
+		tag, ok := releaseArg(args)
+		if !ok {
+			fmt.Fprintln(os.Stderr, "usage: "+core.Cmd+" update [--release <tag>|latest]")
+			return 2
+		}
 		return withClient(func(c *api.Client) error {
 			var msg string
-			body := map[string]string{}
-			if len(args) == 2 && args[0] == "--release" {
-				body["release"] = args[1]
-			}
-			if err := c.Do("POST", "/api/update", body, &msg); err != nil {
+			if err := c.Do("POST", "/api/update", map[string]string{"release": tag}, &msg); err != nil {
 				return err
 			}
 			fmt.Println(msg)
@@ -280,6 +281,20 @@ func cmdOpen() int {
 		return 1
 	}
 	return 0
+}
+
+// releaseArg is the tag `update` was asked for, "" for the newest; ok is
+// false for any other arguments, so a misspelt flag never installs the newest.
+func releaseArg(args []string) (tag string, ok bool) {
+	switch {
+	case len(args) == 0:
+		return "", true
+	case len(args) == 2 && args[0] == "--release" && args[1] != "":
+		return args[1], true
+	case len(args) == 1 && strings.HasPrefix(args[0], "--release=") && args[0] != "--release=":
+		return strings.TrimPrefix(args[0], "--release="), true
+	}
+	return "", false
 }
 
 func cmdAsk(args []string) int {
