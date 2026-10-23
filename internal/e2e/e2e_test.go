@@ -716,9 +716,10 @@ func TestOutsideStep(t *testing.T) {
 
 // TestHostPython: the person's python lives outside the system dirs (as uv or
 // pip put it under the home), and the baseline and a worker's checks run that
-// same program, bare and under HIVE_E2E_SANDBOX=auto. ci.yml's sandboxed-e2e
-// job runs it under bubblewrap. Not parallel: the daemon takes PATH from this
-// process.
+// same program, bare and under HIVE_E2E_SANDBOX=auto. The fake python prints 7
+// where its folder is read-only (bound into the sandbox) and 8 where it can
+// write it (bare), so ci.yml's sandboxed-e2e job fails unless bubblewrap ran
+// the check. Not parallel: the daemon takes PATH from this process.
 func TestHostPython(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX sh")
@@ -726,18 +727,22 @@ func TestHostPython(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "py", "bin")
 	os.MkdirAll(dir, 0o755)
 	for _, n := range []string{"python", "python3"} {
-		os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\necho 7\n"), 0o755)
+		os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\n[ -w \"${0%/*}\" ] && echo 8 || echo 7\n"), 0o755)
+	}
+	want := 8.0
+	if os.Getenv("HIVE_E2E_SANDBOX") == "auto" {
+		want = 7
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	h := start(t)
 	py := `PY=$(command -v python || command -v python3) || { echo \"no python or python3 on PATH\" >&2; exit 127; }; \"$PY\"`
 	h.seed("me/py", map[string]string{
-		".hive/project.json": `{"test": "` + py + ` | grep -qx 7", "score": {"command": "` + py + `", "direction": "higher", "tolerance": 0}}`,
+		".hive/project.json": `{"test": "` + py + ` | grep -qx ` + fmt.Sprint(want) + `", "score": {"command": "` + py + `", "direction": "higher", "tolerance": 0}}`,
 		".hive/goals.md":     "# Goals\n",
 	})
 	h.post("/api/project", map[string]any{"name": "py", "repo": "me/py"}, nil)
 	h.wait("the baseline from the host's python", minute, func(st api.State) bool {
-		return len(st.Projects) == 1 && st.Projects[0].Best != nil && *st.Projects[0].Best == 7
+		return len(st.Projects) == 1 && st.Projects[0].Best != nil && *st.Projects[0].Best == want
 	})
 	h.post("/api/ask", map[string]string{"project": "py", "title": "add a note", "known": "anything"}, nil)
 	h.wait("the worker to land", 3*minute, taskStage("py", "add a note", work.StageDone))
