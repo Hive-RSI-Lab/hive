@@ -55,6 +55,7 @@ func New(ws core.Workspace, forge core.Forge) (*App, error) {
 	a.System = system.New(c)
 	a.Risk = risk.New(c, a.Mods, a.Agents)
 	a.Work.Steps = a.Risk.Steps
+	a.Work.Weigh = a.Risk.Weigh
 	a.Projects = projects.New(c, a.Chat, a.Work, a.Improve)
 	a.Release = release.New(c)
 	a.Improve.OnKept = a.Release.AfterKept
@@ -67,6 +68,7 @@ func New(ws core.Workspace, forge core.Forge) (*App, error) {
 		}
 		return "started " + s.ID, nil
 	}})
+	a.System.Register(system.Job{Name: "improve.stepback", Fn: func() (string, error) { return a.Improve.RotateStepBacks(), nil }})
 	a.System.Register(system.Job{Name: "kb.file", Fn: func() (string, error) {
 		id, err := a.KB.File()
 		if err != nil {
@@ -105,6 +107,7 @@ func (a *App) Tick() {
 	a.Work.Tick()
 	a.Improve.Tick()
 	a.Improve.TickSweeps()
+	a.Improve.TickStepBacks()
 	a.KB.Tick()
 	a.System.Tick()
 	a.Risk.Tick()

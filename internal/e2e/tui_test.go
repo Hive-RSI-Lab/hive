@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/api"
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
+	"github.com/ihsan-sa/hive-standalone-build/internal/proc"
 )
 
 // term is a tmux server of the test's own, holding one window that a person
@@ -184,7 +186,13 @@ func TestControlCenterInTmux(t *testing.T) {
 	t.Cleanup(func() {
 		cmd := exec.Command(bin, "shutdown")
 		cmd.Env = x.env
-		cmd.Run()
+		if cmd.Run() == nil {
+			return
+		}
+		var info api.DaemonInfo // shutdown failed: don't leave the daemon running in a removed HOME
+		if raw, err := os.ReadFile(filepath.Join(ws.Hive(), "daemon.json")); err == nil && json.Unmarshal(raw, &info) == nil && info.PID > 0 {
+			proc.Kill(proc.Handle{PID: info.PID})
+		}
 	})
 
 	// The checks: with only git on PATH, the first run names what's missing.
@@ -207,6 +215,7 @@ func TestControlCenterInTmux(t *testing.T) {
 	// harness, as a person's own settings would point it at Claude Code.
 	cfg := ws.LoadConfig()
 	cfg.Harness = "fake"
+	cfg.MemFloorMB, cfg.MemPressureMax, cfg.CPUPressureMax = 0, 0, 0
 	for k := range cfg.Schedules {
 		cfg.Schedules[k] = "off"
 	}
@@ -266,11 +275,11 @@ func TestControlCenterInTmux(t *testing.T) {
 	x.wait(10*time.Second, "3  tell me after")
 	x.keys("Enter")
 	x.wait(10*time.Second, "1  ask me before anything outside the project")
-	x.pick("model")
+	x.pick("worker model")
 	x.keys("Enter")
-	x.wait(10*time.Second, "› sonnet")
-	x.keys("C-u")
-	x.typ("opus")
+	x.wait(10*time.Second, "▸ opus")
+	x.keys("Down")
+	x.wait(10*time.Second, "▸ sonnet")
 	x.keys("Enter")
 	x.wait(10*time.Second, "saved")
 	x.pick("auto-update")
@@ -278,7 +287,7 @@ func TestControlCenterInTmux(t *testing.T) {
 	x.keys("Enter")
 	x.wait(10*time.Second, "auto-update changed")
 	x.shot("settings")
-	if got := ws.LoadConfig(); got.Autonomy != 1 || got.Model != "opus" || got.AutoUpdate == auto {
+	if got := ws.LoadConfig(); got.Autonomy != 1 || got.Model != "sonnet" || got.AutoUpdate == auto {
 		t.Fatalf("config.json: autonomy %d model %q auto-update %v (was %v)", got.Autonomy, got.Model, got.AutoUpdate, auto)
 	}
 
@@ -309,7 +318,7 @@ func TestControlCenterInTmux(t *testing.T) {
 			states = append(states, r.State)
 		}
 		slices.Sort(states)
-		if len(states) == 2 && states[0] == "declined" && states[1] != "asked" && states[1] != "declined" {
+		if len(states) == 2 && states[0] == "declined" && states[1] == "done" { // go ahead: the warden weighed it and the step ran
 			break
 		}
 		if time.Now().After(deadline) {

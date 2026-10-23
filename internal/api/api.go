@@ -35,23 +35,25 @@ type DaemonInfo struct {
 
 // State is everything the control center shows.
 type State struct {
-	Version    string            `json:"version"`
-	Seq        int64             `json:"seq"`
-	Workspace  string            `json:"workspace"`
-	Sandbox    string            `json:"sandbox"`
-	SandboxErr string            `json:"sandbox_err,omitempty"`
-	Projects   []ProjectView     `json:"projects"`
-	Runs       []core.Run        `json:"runs"`
-	Plans      []core.Plan       `json:"plans"`
-	Sweeps     []improve.Sweep   `json:"sweeps"`
-	Asks       []core.Ask        `json:"asks"`
-	Alerts     []Alert           `json:"alerts"`
-	Jobs       []system.JobState `json:"jobs"`
-	Wakeups    []system.Wakeup   `json:"wakeups"`
-	Modules    []ModuleView      `json:"modules"`
-	Chats      []ChatView        `json:"chats"`
-	Requests   []risk.Request    `json:"requests"`
-	Config     core.Config       `json:"config"`
+	Version    string             `json:"version"`
+	Seq        int64              `json:"seq"`
+	Workspace  string             `json:"workspace"`
+	Sandbox    string             `json:"sandbox"`
+	SandboxErr string             `json:"sandbox_err,omitempty"`
+	Projects   []ProjectView      `json:"projects"`
+	Runs       []core.Run         `json:"runs"`
+	Plans      []core.Plan        `json:"plans"`
+	Sweeps     []improve.Sweep    `json:"sweeps"`
+	StepBacks  []improve.StepBack `json:"stepbacks"`
+	Asks       []core.Ask         `json:"asks"`
+	Alerts     []Alert            `json:"alerts"`
+	Jobs       []system.JobState  `json:"jobs"`
+	Wakeups    []system.Wakeup    `json:"wakeups"`
+	Modules    []ModuleView       `json:"modules"`
+	Chats      []ChatView         `json:"chats"`
+	Requests   []risk.Request     `json:"requests"`
+	Config     core.Config        `json:"config"`
+	ConfigErr  string             `json:"config_err,omitempty"`
 }
 
 // ProjectView is one project on the dashboard.
@@ -68,6 +70,7 @@ type Alert struct {
 	At   time.Time `json:"at"`
 	Kind string    `json:"kind"`
 	Text string    `json:"text"`
+	Ref  string    `json:"ref,omitempty"` // a later alert with the same ref replaces it
 }
 
 // ModuleView is one installed module.
@@ -213,4 +216,10 @@ func (c *Client) Ping() bool {
 func (c *Client) State() (State, error) {
 	var s State
 	return s, c.Do("GET", "/api/state", nil, &s)
+}
+
+// ConfigView is GET /api/config: every setting that read, and what config.json got wrong.
+type ConfigView struct {
+	core.Config
+	LoadError string `json:"load_error,omitempty"`
 }

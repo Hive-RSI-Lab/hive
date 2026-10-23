@@ -12,10 +12,13 @@ import (
 
 // Asked for a module with one project open, the lead builds it as a project
 // of its own, not in the project that happens to exist, says so, and once it
-// merges asks the person to install it into .modules/.
+// merges asks the person (autonomy 1) to install it into .modules/.
 func TestAskForModule(t *testing.T) {
 	t.Parallel()
 	h := start(t)
+	cfg := h.ws.LoadConfig()
+	cfg.Autonomy = 1
+	h.ws.SaveConfig(cfg)
 	h.post("/api/project", map[string]any{"demo": true}, nil)
 	h.post("/api/chat", map[string]string{"chat": "lead", "text": "make a module called ledger that keeps a cost and token ledger"}, nil)
 	h.wait("the lead to say where the module is built", minute, func(api.State) bool {
