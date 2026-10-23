@@ -511,6 +511,24 @@ func TestWardenAskingTheRequesterWaits(t *testing.T) {
 	}
 }
 
+// A late answer does not revive a run that was stopped on purpose; the
+// answer is noted on the run instead.
+func TestLateAnswerLeavesStoppedRunStopped(t *testing.T) {
+	g := newRig(t, 2)
+	req := g.request("install a tool", "x", "T2")
+	g.c.Runs.Stop(g.worker.ID, "the person stopped it")
+	if g.run(g.worker.ID).Status != core.StatusStopped {
+		t.Fatalf("not stopped: %+v", g.run(g.worker.ID))
+	}
+	if err := g.decide(req, map[string]string{"decision": "decline", "reason": "no"}); err != nil {
+		t.Fatal(err)
+	}
+	w := g.run(g.worker.ID)
+	if w.Status != core.StatusStopped || !strings.Contains(w.Progress, "late answer") {
+		t.Fatalf("a late answer revived or was lost: %+v", w)
+	}
+}
+
 func TestTribunalThatCannotStartFails(t *testing.T) {
 	g := newRig(t, 2)
 	req := g.request("a hard step", "x", "T2")

@@ -372,9 +372,14 @@ func (m *Module) Steps(run string) (string, bool) {
 	return strings.Join(lines, "\n"), ok && len(lines) > 0
 }
 
-// tell gives the asker the answer; one that already ended is woken with it.
+// tell gives the asker the answer; one that already ended is woken with it,
+// but one that was stopped on purpose stays stopped and only has it noted.
 func (m *Module) tell(req Request, text string) {
 	text = "[request " + req.ID + "] " + text
+	if r, ok := m.C.Runs.Get(req.Origin); ok && r.Status == core.StatusStopped {
+		m.C.Runs.Progress(req.Origin, "late answer, run stays stopped: "+text)
+		return
+	}
 	if m.C.Runs.Send(req.Origin, text) != nil {
 		m.reopen(req.Origin, text)
 	}
