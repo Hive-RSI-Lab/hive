@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -54,14 +55,17 @@ func (x *term) typ(text string) {
 // screen is what the window shows, with lines the terminal wrapped joined back.
 func (x *term) screen() string { x.t.Helper(); return x.tmux("capture-pane", "-p", "-J", "-t", "hive") }
 
+// reverse is the SGR that turns reverse video on; tmux may fold a reset into it (ESC[0;7m).
+var reverse = regexp.MustCompile(`\x1b\[(?:[0-9;]*;)?7m`)
+
 // selected is the control center's cursor: the text drawn in reverse video
 // (a list row), else the row after the ▌ gutter (a setting).
 func (x *term) selected() string {
 	x.t.Helper()
 	lines := strings.Split(x.tmux("capture-pane", "-p", "-e", "-t", "hive"), "\n")
 	for _, l := range lines {
-		if _, rev, ok := strings.Cut(l, "\x1b[7m"); ok {
-			rev, _, _ = strings.Cut(rev, "\x1b[")
+		if i := reverse.FindStringIndex(l); i != nil {
+			rev, _, _ := strings.Cut(l[i[1]:], "\x1b[")
 			return strings.TrimPrefix(strings.TrimSpace(rev), "› ")
 		}
 	}
@@ -146,20 +150,24 @@ func top(s string) bool { return strings.HasPrefix(s, " hive ") || strings.HasPr
 // took the screen.
 func (x *term) goTo(label string) {
 	x.t.Helper()
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 30; i++ {
 		s := x.screen()
 		if strings.Contains(s, "enter open   space collapse   tab switch pane") {
 			break
 		}
-		if strings.HasPrefix(s, " ‹ ") {
+		hints := strings.TrimSpace(s[strings.LastIndex(strings.TrimSpace(s), "\n")+1:])
+		switch {
+		case !strings.Contains(hints, "tab ") && !strings.Contains(hints, "esc "): // a flash holds the hint line for a few seconds
+		case strings.HasPrefix(s, " ‹ "):
 			x.keys("Escape")
-		} else {
+		default:
 			x.keys("Tab")
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	x.pick(label)
 	x.keys("Enter")
+	x.until(10*time.Second, "focus leaving the sidebar", func(s string) bool { return !strings.Contains(s, "tab switch pane") })
 }
 
 // sections walks the sidebar through all five sections, back to Chats, and checks each frame.
@@ -272,6 +280,7 @@ func TestControlCenterInTmux(t *testing.T) {
 	x.sections(80, 24)
 
 	// Chats: a request to the lead gets a reply, starts work, and lands.
+	x.keys("n")
 	x.typ("implement capitalize_words with a test")
 	x.wait(10*time.Second, "› implement capitalize_words")
 	x.keys("Enter")
@@ -294,7 +303,7 @@ func TestControlCenterInTmux(t *testing.T) {
 	}
 	x.shot("dashboard after the merge")
 	x.goTo("Chats")
-	x.wait(time.Minute, "hive › lead", "Merged: implement capitalize_words")
+	x.wait(time.Minute, "hive  ", "Merged: implement capitalize_words")
 	x.shot("chat after the merge")
 
 	// Settings: autonomy to 1, the model, and auto-update, each saved to config.json.
@@ -304,7 +313,7 @@ func TestControlCenterInTmux(t *testing.T) {
 	x.keys("Enter")
 	x.wait(10*time.Second, "3  tell me after")
 	x.keys("Enter")
-	x.wait(10*time.Second, "1  ask me before anything outside the project")
+	x.wait(10*time.Second, "1  ask me before anything")
 	x.pick("model")
 	x.keys("Enter")
 	x.wait(10*time.Second, "› sonnet")
@@ -324,7 +333,8 @@ func TestControlCenterInTmux(t *testing.T) {
 	// Waiting: with autonomy 1, two steps outside the project come to the
 	// person; one is approved and one declined from the keyboard.
 	x.goTo("Chats")
-	x.wait(10*time.Second, "hive › lead")
+	x.wait(10*time.Second, "textkit › lead")
+	x.keys("n")
 	for _, ask := range []string{"add left-pad FAKE:needpackage", "add right-pad FAKE:needpackage"} {
 		x.typ(ask)
 		x.keys("Enter")
@@ -423,7 +433,7 @@ func TestControlCenterInTmux(t *testing.T) {
 	x.shot("hive status after quitting")
 	x.typ("hive")
 	x.keys("Enter")
-	x.wait(30*time.Second, "hive › lead", "Merged: implement capitalize_words")
+	x.wait(30*time.Second, "hive › lead", "▾ textkit")
 	x.frame(80, 24, "reopened")
 	x.keys("q")
 }

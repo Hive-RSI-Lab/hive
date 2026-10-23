@@ -154,7 +154,7 @@ func (m *model) keyDash(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.onlyMe, m.feedSel = !m.onlyMe, -1
 	case "s":
 		m.dashTree = true
-	case "esc", "left", "h":
+	case "left", "h":
 		m.focus = 0
 	case "enter", "right", "l":
 		if sel < 0 {

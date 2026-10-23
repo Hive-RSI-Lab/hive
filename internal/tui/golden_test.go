@@ -208,3 +208,18 @@ func column(s string, x, w, h int) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// TestTinySizes renders every section, in each pane, at sizes too small for the layout.
+func TestTinySizes(t *testing.T) {
+	for _, sz := range [][2]int{{30, 8}, {50, 16}, {40, 10}, {41, 11}} {
+		m := designModel(sz[0], sz[1])
+		designFeed(m)
+		for sec := secChats; sec <= secSettings; sec++ {
+			m.section = sec
+			for f := 0; f < 3; f++ {
+				m.focus = f
+				_ = m.View()
+			}
+		}
+	}
+}

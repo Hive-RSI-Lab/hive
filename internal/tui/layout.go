@@ -14,7 +14,7 @@ var (
 	stBoldF = lipgloss.NewStyle().Bold(true).Faint(true)
 	stSel   = lipgloss.NewStyle().Reverse(true)
 	stBad   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Dark: "#E5534B", Light: "#C4352B"})
-	// Kept for the dashboard's tree, which predates the design's palette.
+	// Kept for the status tree and run detail, which predate the design's palette.
 	stGood   = lipgloss.NewStyle()
 	stWarn   = stTitle
 	stAccent = stTitle

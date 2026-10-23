@@ -298,18 +298,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		if msg.err != nil { // the text goes back in the box, unless it holds a new one
+		if msg.err != nil { // the text goes back in the box, above anything typed since
 			k := msg.out.chat + "\x00" + msg.out.thread
-			if m.composing && m.chat+"\x00"+m.reply == k && m.input.Value() == "" {
-				m.input.SetValue(msg.out.text)
-			} else if !m.composing || m.chat+"\x00"+m.reply != k {
-				m.drafts[k] = msg.out.text
+			back := func(cur string) string { return strings.TrimSpace(msg.out.text + "\n" + cur) }
+			if m.composing && m.chat+"\x00"+m.reply == k {
+				m.input.SetValue(back(m.input.Value()))
+			} else {
+				m.drafts[k] = back(m.drafts[k])
 			}
 			m.setFlash("✗ not sent · " + msg.err.Error())
 			return m, nil
 		}
 		m.msgs[msg.out.chat] = append(m.msgs[msg.out.chat], msg.msg)
-		if msg.out.thread == "" && m.chat == msg.out.chat { // a new thread opens in its pane
+		if msg.out.thread == "" && m.section == secChats && m.chat == msg.out.chat { // a new thread opens in its pane
 			m.thread, m.focus, m.threadSel = msg.msg.Thread, 2, -1
 			if m.thread == "" {
 				m.thread = msg.msg.ID
@@ -325,7 +326,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			first := !m.loaded
 			m.err, m.st, m.loaded = "", msg.st, true
 			for _, c := range m.st.Chats {
-				if first && m.chat == "" && c.Kind == "lead" { // open on the Hive's lead, ready to type
+				if first && m.chat == "" && c.Kind == "lead" { // open on the Hive's lead
 					return m, m.openChat(c.ID)
 				}
 			}
@@ -533,6 +534,9 @@ func (m *model) View() string {
 	if m.w == 0 {
 		return ""
 	}
+	if m.w < 40 || m.h < 10 {
+		return "Make the window larger, at least 40×10."
+	}
 	sw, mw, tw := m.layout()
 	ps := []pane{m.viewSidebar(sw), m.viewMain(mw)}
 	if m.takeover() {
@@ -664,7 +668,7 @@ func helpLines() []string {
 		"enter             open; in a box, send",
 		"esc               leave a box, close a thread, one level up",
 		"space             expand or collapse",
-		"n                 new thread; typing in a chat starts one too",
+		"n                 new thread",
 		"ctrl+j            new line in a box",
 		"pgup pgdn, wheel  scroll",
 		"q                 quit the control center; the Hive keeps working",

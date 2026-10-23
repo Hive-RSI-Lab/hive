@@ -288,12 +288,6 @@ func (m *model) keyChannel(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.chScroll = scroll(m.chScroll, s, m.h-4)
 	case "n", "i":
 		return m, m.focusBox("")
-	default:
-		if k.Type == tea.KeyRunes && !k.Paste && m.chat != "" { // typing starts a new thread
-			cmd := m.focusBox("")
-			m.input.InsertString(string(k.Runes))
-			return m, cmd
-		}
 	}
 	return m, nil
 }
@@ -398,7 +392,7 @@ func (m *model) viewChannel(w int) pane {
 		lines = append(lines, "")
 	}
 	if len(ts) == 0 {
-		hint := "Nothing here yet. Start typing to write to the lead."
+		hint := "Nothing here yet. Press n to write to the lead."
 		if c.Kind == "agent" {
 			hint = "Write to this agent; it reads your message after its current turn."
 		}
