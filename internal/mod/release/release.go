@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,9 @@ type Module struct {
 // Site serves the releases: GitHub over plain HTTPS, so updating needs no
 // login and follows the redirect from a renamed repo. Tests point it elsewhere.
 var Site = "https://github.com"
+
+// API serves each release's notes. Tests point it elsewhere.
+var API = "https://api.github.com"
 
 // executable is the binary an update replaces, through any hive-v0 link.
 var executable = setup.Executable
@@ -82,6 +86,38 @@ func download(repo, tag, name, dir string) error {
 	_, err = io.Copy(f, resp.Body)
 	return err
 }
+
+// Notes are the release notes of each version after from up to to, newest
+// first, each with its page; when they can't be fetched, the releases page.
+func Notes(repo, from, to string) string {
+	var rels []struct {
+		Tag  string `json:"tag_name"`
+		Body string
+		URL  string `json:"html_url"`
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(API + "/repos/" + repo + "/releases?per_page=100")
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			err = errors.New(resp.Status)
+		} else {
+			err = json.NewDecoder(resp.Body).Decode(&rels)
+		}
+	}
+	var b strings.Builder
+	for _, r := range rels {
+		if modules.Newer(from, r.Tag) && !modules.Newer(to, r.Tag) {
+			fmt.Fprintf(&b, "%s: %s\n%s\n\n", r.Tag, r.URL, strings.TrimSpace(r.Body))
+		}
+	}
+	if err != nil || b.Len() == 0 {
+		return NotesLink(repo)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// NotesLink points at the releases page.
+func NotesLink(repo string) string { return "What changed: " + Site + "/" + repo + "/releases" }
 
 // AssetName is the release asset for an OS and architecture.
 func AssetName(goos, goarch string) string {
@@ -160,14 +196,16 @@ func (m *Module) Update(tag string) (string, error) {
 	if err := m.pin(cfg, tag, pin); err != nil {
 		return "", err
 	}
-	m.C.J.MustAppend("hive.updated", map[string]string{"from": core.Version, "to": tag})
+	notes := Notes(cfg.ReleaseRepo, core.Version, tag)
+	m.C.J.MustAppend("hive.updated", map[string]string{"from": core.Version, "to": tag, "notes": notes})
 	if m.Restart != nil {
 		go func() { time.Sleep(time.Second); m.Restart() }()
 	}
+	msg := "updated to " + tag
 	if pin {
-		return "updated to " + tag + ", pinned there with auto-update off: `" + core.Cmd + " update` goes back to the newest", nil
+		msg += ", pinned there with auto-update off: `" + core.Cmd + " update` goes back to the newest"
 	}
-	return "updated to " + tag, nil
+	return msg + "\n\n" + notes, nil
 }
 
 // pin keeps the Hive on tag, or with on false follows the newest release.

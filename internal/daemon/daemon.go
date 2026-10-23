@@ -177,6 +177,15 @@ func Run(ws core.Workspace, waitFor int) error {
 	s := &server{a: a, info: info, cancel: cancel}
 	a.Runner.API = fmt.Sprintf("http://127.0.0.1:%d", info.Port)
 	a.Release.Restart = func() { s.restart() }
+	a.C.J.Replay(func(e core.Event) {
+		var u api.Updated
+		if e.Kind == "hive.updated" && e.Decode(&u) == nil && u.To == core.Version {
+			if u.Notes == "" { // updated by a version that didn't fetch notes
+				u.Notes = release.NotesLink(a.C.WS.LoadConfig().ReleaseRepo)
+			}
+			u.Seq, s.update = e.Seq, &u
+		}
+	})
 	a.C.J.Subscribe(s.onEvent)
 	a.C.J.MustAppend("hive.started", map[string]string{"version": core.Version, "pid": strconv.Itoa(os.Getpid())})
 	srv := &http.Server{Handler: s.routes(), ReadHeaderTimeout: 10 * time.Second}
@@ -197,6 +206,7 @@ type server struct {
 	cancel func()
 	mu     sync.Mutex
 	alerts []api.Alert
+	update *api.Updated
 }
 
 func (s *server) onEvent(e core.Event) {
@@ -623,6 +633,7 @@ func (s *server) state() api.State {
 	st.Asks = a.C.Person.Open()
 	s.mu.Lock()
 	st.Alerts = append([]api.Alert{}, s.alerts...)
+	st.Updated = s.update
 	s.mu.Unlock()
 	if cfgErr != nil { // live, so it goes once the file is fixed
 		st.ConfigErr = cfgErr.Error()
