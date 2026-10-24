@@ -199,7 +199,8 @@ func build(cfg Config, c *Child, sha string) error {
 	run := func(dir string, name string, args ...string) (string, error) {
 		cmd := exec.Command(name, args...)
 		cmd.Dir = dir
-		cmd.Env = append(cleanEnv(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
+		// The build is the gate's own work, not a child's: it needs the Go caches under HOME, and no credentials.
+		cmd.Env = append(cleanEnv(), "HOME="+os.Getenv("HOME"), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
