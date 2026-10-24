@@ -105,6 +105,7 @@ type model struct {
 	seen      int64 // the journal seq the person has seen up to, for the update notice
 	notice    *api.Updated
 	help      bool
+	sel       selection // a mouse drag in progress
 }
 
 type stateMsg struct {
@@ -369,6 +370,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.key(msg)
 	case tea.MouseMsg:
+		if ok, cmd := m.mouseSelect(msg); ok {
+			return m, cmd
+		}
 		s := map[tea.MouseButton]string{tea.MouseButtonWheelUp: "wheelup", tea.MouseButtonWheelDown: "wheeldown"}[msg.Button]
 		switch {
 		case s == "" || msg.Action != tea.MouseActionPress || m.help || m.showSince || m.notice != nil:
@@ -672,7 +676,13 @@ func (m *model) View() string {
 	} else if tw > 0 {
 		ps = append(ps, m.viewThread(tw))
 	}
-	return m.frame(ps, m.hintLine())
+	v := m.frame(ps, m.hintLine())
+	if m.sel.on {
+		screen := strings.Split(v, "\n")
+		m.sel.paint(screen, m.w)
+		v = strings.Join(screen, "\n")
+	}
+	return v
 }
 
 func (m *model) viewMain(w int) pane {
