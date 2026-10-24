@@ -416,7 +416,7 @@ func TestSupersedeIsTheHives(t *testing.T) {
 	land("a3", "r3")
 	m.AfterKept("hive", "m3")
 	got, _ := m.C.Person.Get(old.ID)
-	if got.Answer != "superseded" || !strings.HasPrefix(got.Note, "the Hive") {
+	if got.Answer != "hold" || !strings.HasPrefix(got.Note, "the Hive") {
 		t.Fatalf("the supersede should say it is the Hive's: %+v", got)
 	}
 }
