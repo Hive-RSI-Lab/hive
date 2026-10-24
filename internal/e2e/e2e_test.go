@@ -8,7 +8,10 @@
 package e2e
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -75,12 +78,13 @@ type hive struct {
 	forge *core.Local
 	cmd   *exec.Cmd
 	c     *api.Client
+	env   []string // added to the daemon's environment
 }
 
-func start(t *testing.T) *hive {
+func start(t *testing.T, env ...string) *hive {
 	t.Helper()
 	dir := t.TempDir()
-	h := &hive{t: t, ws: core.Workspace{Root: filepath.Join(dir, "hive")}, forge: &core.Local{Dir: filepath.Join(dir, "forge")}}
+	h := &hive{t: t, ws: core.Workspace{Root: filepath.Join(dir, "hive")}, forge: &core.Local{Dir: filepath.Join(dir, "forge")}, env: env}
 	if err := h.ws.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +166,7 @@ func (h *hive) quiesce() {
 func (h *hive) launch() {
 	h.t.Helper()
 	cmd := exec.Command(bin, "daemon")
-	cmd.Env = append(os.Environ(), "HIVE_HOME="+h.ws.Root, "HIVE_FORGE=local:"+h.forge.Dir)
+	cmd.Env = append(append(os.Environ(), "HIVE_HOME="+h.ws.Root, "HIVE_FORGE=local:"+h.forge.Dir), h.env...)
 	cmd.Dir = h.ws.Root
 	log, _ := os.OpenFile(filepath.Join(h.ws.Hive(), "daemon-test.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	cmd.Stdout, cmd.Stderr = log, log
@@ -828,6 +832,69 @@ func TestWaitingReachesThePerson(t *testing.T) {
 	h.wait("the refused worker to stop", 3*minute, taskStage("wait", "no", work.StageBlocked))
 }
 
+// TestBlockedWorkComesBack replays the first real run: each worker's tests fail
+// on a missing tool, it asks a warden and finishes blocked at once. Where the
+// warden installs the tool, its answer wakes the worker and the PR merges;
+// where it declines and the person installs the tool, the lead re-runs the check.
+func TestBlockedWorkComesBack(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	// the sandboxed check sees system dirs like /var, not the test's temp dir
+	dir, err := os.MkdirTemp("/var/tmp", "hive-tool-")
+	if err != nil {
+		dir = t.TempDir()
+	} else {
+		t.Cleanup(func() { os.RemoveAll(dir) })
+	}
+	for _, name := range []string{"tool", "rerun"} {
+		marker := filepath.Join(dir, name)
+		// main is green; only the worker's change (under work/) needs the tool
+		h.seed("me/"+name, map[string]string{".hive/project.json": `{"test": "test -f ` + filepath.ToSlash(marker) + ` || test ! -d work"}`, ".hive/goals.md": "# Goals\n"})
+		h.post("/api/project", map[string]any{"name": name, "repo": "me/" + name}, nil)
+		known := "FAKE:needtool " + filepath.ToSlash(marker)
+		if name == "rerun" {
+			known += " FAKE:wardendecline"
+		}
+		h.post("/api/ask", map[string]string{"project": name, "title": name, "known": known}, nil)
+	}
+	h.wait("the warden's answer to wake the worker and its PR to merge", 4*minute, taskStage("tool", "tool", work.StageDone))
+	st := h.wait("the declined worker to stay blocked", 4*minute, func(st api.State) bool {
+		t, ok := task(st, "rerun", "rerun")
+		return ok && t.Stage == work.StageBlocked && strings.Contains(t.Reason, "declined") && t.PR.Number != 0
+	})
+	rerun, _ := task(st, "rerun", "rerun")
+	os.WriteFile(filepath.Join(dir, "rerun"), nil, 0o644) // the person installs the tool
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "recheck " + rerun.ID}, nil)
+	h.wait("the lead's re-run to pass and merge the PR", 4*minute, taskStage("rerun", "rerun", work.StageDone))
+}
+
+// TestStoppedWorkComesBack: a change whose tests keep failing stops after its
+// fix rounds and goes to the lead, not the person; the lead sends it back with
+// what remains and it merges.
+func TestStoppedWorkComesBack(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.seed("me/stop", map[string]string{".hive/project.json": `{"test": "test ! -f BROKEN"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "stop", "repo": "me/stop"}, nil)
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "hello"}, nil) // the lead is up to be told
+	title := "break the build FAKE:leadfixes"
+	h.post("/api/ask", map[string]string{"project": "stop", "title": title, "known": "FAKE:breaktests"}, nil)
+	st := h.wait("the lead's call to bring it back past the fix rounds and merge it", 6*minute, taskStage("stop", title, work.StageDone))
+	tk, _ := task(st, "stop", title)
+	stopped := false
+	for _, e := range tk.Log {
+		stopped = stopped || strings.Contains(e.Text, "stopped after 3 rounds")
+	}
+	if !stopped {
+		t.Fatalf("it never stopped after its rounds: %+v", tk.Log)
+	}
+	for _, msg := range h.messages("lead") {
+		if strings.Contains(msg.Text, "Stopped") {
+			t.Fatalf("the person was told of work the lead owns: %q", msg.Text)
+		}
+	}
+}
+
 // TestWardenOutlivesARestart: a warden mid-turn when the Hive restarts still
 // decides, and once its process ends it leaves the live list. Here the test
 // process adopts the orphaned turn and never reaps it, as a container's PID 1
@@ -996,6 +1063,50 @@ func TestAgentsReadTheHive(t *testing.T) {
 }
 
 func init() { _ = fmt.Sprint }
+
+// TestToolInstall: a worker that needs python installs it through the Hive
+// and runs it in its next command, from the Hive's tools folder, and the
+// person is told. The python is a fake from HIVE_TOOLS_SOURCE unless
+// HIVE_E2E_TOOLS=live, which downloads the real uv and python (with
+// HIVE_E2E_SANDBOX=auto, the live check that a sandbox runs it).
+func TestToolInstall(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("tools are Linux builds for the WSL sandbox; a bare Windows run can't exec them")
+	}
+	var env []string
+	if os.Getenv("HIVE_E2E_TOOLS") != "live" {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(zw)
+		script := "#!/bin/sh\necho \"$0\"\n" // prints where it was run from, as sys.executable does
+		tw.WriteHeader(&tar.Header{Name: "fake/bin/python3", Mode: 0o755, Size: int64(len(script)), Typeflag: tar.TypeReg})
+		tw.Write([]byte(script))
+		tw.Close()
+		zw.Close()
+		src := t.TempDir()
+		os.WriteFile(filepath.Join(src, "python.tar.gz"), buf.Bytes(), 0o644)
+		os.WriteFile(filepath.Join(src, "python.tar.gz.sha256"), fmt.Appendf(nil, "%x  python.tar.gz\n", sha256.Sum256(buf.Bytes())), 0o644)
+		env = append(env, "HIVE_TOOLS_SOURCE="+src)
+	}
+	h := start(t, env...)
+	h.seed("me/py", map[string]string{".hive/project.json": `{"test": "true"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "py", "repo": "me/py"}, nil)
+	title := "Add a small python script to the repo: FAKE:needpython"
+	h.post("/api/ask", map[string]string{"project": "py", "title": title}, nil)
+	st := h.wait("the worker to land", 10*minute, taskStage("py", title, work.StageDone))
+	out, err := core.Git(h.forge.RepoPath("me/py"), "show", "main:PYTHON.md")
+	if err != nil || !strings.Contains(out, "tools/python/") {
+		t.Fatalf("python didn't run from the tools folder: %q %v", out, err)
+	}
+	told := false
+	for _, a := range st.Asks {
+		told = told || a.Kind == "told" && strings.Contains(a.Title, "installed python")
+	}
+	if !told {
+		t.Fatalf("the person wasn't told of the install: %+v", st.Asks)
+	}
+}
 
 // adopt makes this process adopt its daemons' orphans (Linux only).
 var adopt func()

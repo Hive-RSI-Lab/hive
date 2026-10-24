@@ -517,7 +517,7 @@ func (m *Module) hold(project, sha string, root, unread []string, manifest strin
 	ref := project + "@" + sha
 	for _, a := range m.C.Person.Open() {
 		if a.Kind == "release" && a.Project == project && a.Ref != ref {
-			m.C.Person.Answer(a.ID, "superseded", "the Hive, not the person: a release ask at "+core.Short(sha)+" covers it")
+			m.C.Person.Answer(a.ID, "hold", "the Hive, not the person: superseded, a release ask at "+core.Short(sha)+" covers it")
 		}
 	}
 	var why []string

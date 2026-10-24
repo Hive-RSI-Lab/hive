@@ -847,6 +847,12 @@ func (rs *Runs) endTurn(r Run) {
 		te.ParkedUntil = time.Now().Add(min(backoff(cur.Retries), 5*time.Minute))
 	}
 	rs.append("run.turn_ended", te)
+	// A message that came in while it finished blocked (often the answer it was
+	// blocked on) wakes it rather than waiting on a run that takes no turns.
+	if te.Status == StatusBlocked && len(cur.Pending) > 0 {
+		rs.append("run.reopened", runNote{ID: r.ID})
+		rs.append("run.status", runNote{ID: r.ID, Status: StatusIdle, Reason: "woken by a message"})
+	}
 	// A spawned helper's account goes back to the agent that spawned it.
 	if (te.Status == StatusDone || te.Status == StatusBlocked) && r.Parent != "" {
 		account := cur.Result
@@ -1036,6 +1042,7 @@ func (rs *Runs) sandboxSpec(cfg Config, sb sandbox.Sandbox, h harness.Harness, r
 			mounts = append(mounts, sandbox.Mount{Host: d, Inside: "/hive/state/" + filepath.Base(d), Hide: true})
 		}
 	}
+	mounts = append(mounts, sandbox.Mount{Host: rs.ws.Tools(), Inside: sandbox.ToolsInside})
 	mounts = append(mounts, rs.hideIsolated(r)...)
 	if r.Isolated && sb.Isolated() {
 		// Only granted modules are visible: mount each over an empty modules dir,
