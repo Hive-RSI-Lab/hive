@@ -1050,6 +1050,7 @@ func (rs *Runs) sandboxSpec(cfg Config, sb sandbox.Sandbox, h harness.Harness, r
 			mounts = append(mounts, sandbox.Mount{Host: d, Inside: "/hive/state/" + filepath.Base(d), Hide: true})
 		}
 	}
+	mounts = append(mounts, sandbox.Mount{Host: rs.ws.Tools(), Inside: sandbox.ToolsInside})
 	mounts = append(mounts, rs.hideIsolated(r)...)
 	if r.Isolated && sb.Isolated() {
 		// Only granted modules are visible: mount each over an empty modules dir,
