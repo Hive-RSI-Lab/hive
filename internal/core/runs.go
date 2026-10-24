@@ -615,8 +615,12 @@ func (rs *Runs) Send(id, text string) error {
 
 // Reopen lets a finished run take more turns (fix rounds go back to the same worker).
 func (rs *Runs) Reopen(id, text string) error {
-	if _, ok := rs.Get(id); !ok {
+	r, ok := rs.Get(id)
+	if !ok {
 		return ErrNotFound
+	}
+	if r.Status == StatusStopped || r.StopAsked {
+		return fmt.Errorf("run %s was stopped on purpose (%s); it stays stopped", id, r.Reason)
 	}
 	rs.append("run.reopened", runNote{ID: id})
 	rs.append("run.queued", runNote{ID: id, Text: text})
