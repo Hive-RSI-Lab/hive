@@ -17,7 +17,11 @@ import (
 	"unicode/utf8"
 )
 
-// Endpoint records the reports it took. Answer, if set, gives the status for
+// Path is the report address's path. Its /v1/ is the contract's version: a
+// change a receiver of v1 would refuse goes to /v2/.
+const Path = "/v1/report"
+
+// Endpoint records the reports it took; its URL is the full report address. Answer, if set, gives the status for
 // the nth request (from 0); otherwise every valid report gets 202.
 type Endpoint struct {
 	*httptest.Server
@@ -57,6 +61,7 @@ func New(t testing.TB) *Endpoint {
 		e.mu.Unlock()
 		w.WriteHeader(code)
 	}))
+	e.URL += Path
 	t.Cleanup(e.Close)
 	return e
 }
@@ -80,6 +85,9 @@ var (
 // but a client that sends them has drifted.
 func check(r *http.Request, raw []byte) (Report, error) {
 	var rep Report
+	if r.URL.Path != Path {
+		return rep, fmt.Errorf("sent to %s, not the contract's %s", r.URL.Path, Path)
+	}
 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); r.Method != "POST" || mt != "application/json" {
 		return rep, fmt.Errorf("%s with %q", r.Method, r.Header.Get("Content-Type"))
 	}

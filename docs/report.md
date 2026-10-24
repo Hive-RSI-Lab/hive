@@ -6,6 +6,10 @@ An install can send its failures and usage to the Hive's developer so the improv
 
 Reports go to `share_url` in `.hive/config.json`, by default `https://hive-api.ihsan.cc/v1/report`. The endpoint is run by the developer, and this page says only how the Hive meets its contract. In short: `POST`, `Content-Type: application/json`, one report per request, at most 64 KiB, no login. It answers 202 when it stored the report; 400 (not JSON or not the schema), 411, 413 or 415 when it never will; 429 when an install sends more than 30 an hour (or everyone together too many); 507 when its store is full.
 
+## Schema version
+
+This page is version 1 of the report schema, and the version is the `/v1/` in the address. A report a v1 receiver would refuse (a new key, a new `type`, a tighter or looser field) is a new version at `/v2/report`, documented here, and the Hive switches its default address when it sends it; a v1 receiver keeps taking v1 reports. `version` in a report is the Hive's own version, not the schema's. The contract tests (`internal/mod/report/contracttest`) refuse a request to any other path.
+
 ## What the Hive does
 
 - The `report.send` job (default `every 6h`, a schedule like any other) reads the journal since the last run that queued reports, turns what it finds into reports, scrubs each one, adds them to the queue in `.hive/reports/pending.jsonl` and marks the journal. Then it POSTs the queue one report at a time, oldest first. `hive report send` runs it now.
@@ -13,7 +17,7 @@ Reports go to `share_url` in `.hive/config.json`, by default `https://hive-api.i
 - A run sends at most 25 reports, so the job stays under the endpoint's 30 an hour. If the queue holds more, the oldest are dropped and the usage report counts the dropped failures in `failures_dropped`.
 - 2xx: sent. 400, 411, 413 or 415: dropped for good, never retried; its copy stays. Anything else (429, 507, another status, a timeout of 30 s, no connection): the run stops there and that report and the rest wait in the queue for the next run. The Hive carries on either way.
 - Every report sent is kept as `.hive/reports/sent/<time>-<n>.json`, byte for byte the body that went out. The copy is written before the report leaves and removed if it is kept for the next run; if it can't be written, nothing is sent. `hive report` shows the state; `hive report show` prints the last report.
-- `hive doctor` failures are kept in `.hive/reports/outbox.jsonl` (only while sharing is on) and go into the next run's reports; one noted while a run is sending waits for the one after.
+- `hive doctor` failures are appended to `.hive/reports/outbox.jsonl` (only while sharing is on) and go into the next run's reports. The job never rewrites the outbox: the `report.queued` journal event records how far into it a run read, so a failure the doctor appends while a run is reading or sending waits for the next run instead of being lost.
 - The install id is a random UUID made when sharing is first turned on, kept in `install_id` in the config. It fits the endpoint's `[A-Za-z0-9_-]{8,64}` and names no person or machine. There is no account.
 
 

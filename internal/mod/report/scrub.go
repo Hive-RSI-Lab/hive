@@ -19,8 +19,9 @@ var scrubbers = []struct {
 	{regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`), "${1} [secret]"},
 	{regexp.MustCompile(`(?im)\b((set-)?cookie\s*:\s*)[^\r\n]+`), "${1}[secret]"},
 	{regexp.MustCompile(`(?i)([a-z0-9_.-]*(token|secret|passw(or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key|credential|cookie|session)[a-z0-9_.-]*["']?\s*[:=]\s*["']?)[^\s"',;}]+`), "${1}[secret]"},
-	// auth keys (auth, authorization, auth_token, authkey, x-auth-token) but not author or authors.
-	{regexp.MustCompile(`(?i)([a-z0-9_.-]*auth(orization|[_.-]?[a-np-z0-9_.-][a-z0-9_.-]*|o[a-qs-z0-9_.-][a-z0-9_.-]*)?["']?\s*[:=]\s*["']?)[^\s"',;}]+`), "${1}[secret]"},
+	// auth keys (auth, authorization, authorization-header, auth_token, authkey,
+	// x-auth-token) but not author or authors.
+	{regexp.MustCompile(`(?i)([a-z0-9_.-]*auth(orization[a-z0-9_.-]*|[_.-]?[a-np-z0-9_.-][a-z0-9_.-]*|o[a-qs-z0-9_.-][a-z0-9_.-]*)?["']?\s*[:=]\s*["']?)[^\s"',;}]+`), "${1}[secret]"},
 	{regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`), "[email]"},
 	{regexp.MustCompile(`(/home/|/Users/)[^/\s"']+|/root\b|(?i)\b[a-z]:\\users\\[^\\\s"']+`), "~"},
 }

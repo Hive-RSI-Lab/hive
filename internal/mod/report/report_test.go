@@ -70,6 +70,15 @@ var leaks = func() []struct{ in, secret string } {
 		{"oauth_token=zzq1w2e3", "zzq1w2e3"},
 		{"AUTH=plainpass1", "plainpass1"},
 		{"authorization=dXNlcjpw", "dXNlcjpw"},
+		{"TS_AUTHKEY=tskey9q8w7e6", "tskey9q8w7e6"},
+		{"AUTH_KEY=k9j8h7g6f5", "k9j8h7g6f5"},
+		{"auth_key=k9j8h7g6f5", "k9j8h7g6f5"},
+		{"auth_header=h4h3h2h1", "h4h3h2h1"},
+		{"auth_code=c0d3c0d3", "c0d3c0d3"},
+		{"authorization-header=hunter2pass", "hunter2pass"},
+		{"authorization.header=hunter2pass", "hunter2pass"},
+		{"Authorization-Key: abc", ": abc"},
+		{"authorization_code=abc", "=abc"},
 		{"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\nAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----", "AAAAMwAAAAtzc2gtZW"},
 		{"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7bq9 (clipped", "MIIEpAIBAAKCAQEA7bq9"},
 		{"commit by Ihsan Salari <ihsan.salari@example.com>", "ihsan.salari@example.com"},
@@ -274,6 +283,14 @@ func TestCap(t *testing.T) {
 	}
 }
 
+// The default address speaks the schema version the contract tests hold the
+// Hive to.
+func TestDefaultURLIsTheContractVersion(t *testing.T) {
+	if !strings.HasSuffix(DefaultURL, contracttest.Path) {
+		t.Fatalf("%s doesn't end in the contract's %s", DefaultURL, contracttest.Path)
+	}
+}
+
 // What the Hive makes fits the contract's patterns whatever it starts from.
 func TestFieldsFitTheContract(t *testing.T) {
 	var cfg core.Config
@@ -334,5 +351,28 @@ func TestNotedDuringSendWaits(t *testing.T) {
 	}
 	if fails, _, _, _ := (&Module{C: c}).Build(c.WS.LoadConfig()); len(fails) != 1 || fails[0].Message != "B" {
 		t.Fatalf("want B waiting, got %+v", fails)
+	}
+}
+
+// A doctor failure appended after a run read the outbox, but before the run
+// marked it read, isn't lost: the next run builds it.
+func TestNotedBeforeMarkWaits(t *testing.T) {
+	e := contracttest.New(t)
+	c := sharing(t, e.URL, 1)
+	beforeMark = func() { Note(c.WS, Failure{Kind: "doctor", Text: "B"}) }
+	defer func() { beforeMark = func() {} }()
+	_, err := (&Module{C: c}).Send()
+	beforeMark = func() {}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fails, _, _, _ := (&Module{C: c}).Build(c.WS.LoadConfig()); len(fails) != 1 || fails[0].Message != "B" {
+		t.Fatalf("want B waiting, got %+v", fails)
+	}
+	if res, _ := (&Module{C: c}).Send(); !strings.HasPrefix(res, "sent 1") {
+		t.Fatalf("next run: %q", res)
+	}
+	if fails, _, _, _ := (&Module{C: c}).Build(c.WS.LoadConfig()); len(fails) != 0 {
+		t.Fatalf("B built twice: %+v", fails)
 	}
 }

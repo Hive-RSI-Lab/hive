@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 
 // DefaultURL receives reports unless the config names another. It is the
 // developer's live receiver; hive.ihsan.cc is the website and takes no reports.
+// The /v1/ in its path is the version of the report schema (docs/report.md).
 const DefaultURL = "https://hive-api.ihsan.cc/v1/report"
 
 // Caps, as docs/report.md states them.
@@ -114,8 +116,10 @@ func (m *Module) Send() (string, error) {
 		if err := save(ws, queue); err != nil {
 			return "", fmt.Errorf("keeping the reports: %v", err)
 		}
-		trim(outbox(ws), read)
-		m.C.J.MustAppend("report.queued", map[string]any{"seq": seq, "reports": len(queue)})
+		beforeMark()
+		// The outbox is never rewritten, only marked read up to an offset,
+		// so a doctor appending to it can't lose a line to this run.
+		m.C.J.MustAppend("report.queued", map[string]any{"seq": seq, "outbox": read, "reports": len(queue)})
 	}
 	if len(queue) == 0 {
 		return "nothing new", nil
@@ -196,15 +200,25 @@ func save(ws core.Workspace, q []Report) error {
 	return core.WriteFileAtomic(pending(ws), b.Bytes(), 0o600)
 }
 
-// trim drops the first n bytes of the outbox, the part a run queued, and
-// keeps what was noted since.
-func trim(path string, n int) {
-	raw, _ := os.ReadFile(path)
-	if len(raw) <= n {
-		os.Remove(path)
-		return
+// beforeMark runs between queueing and marking the journal; tests note a
+// failure there.
+var beforeMark = func() {}
+
+// unread returns the outbox past offset, up to its last whole line, and the
+// offset that ends it. A file shorter than offset was replaced and is read
+// from the start.
+func unread(path string, offset int64) ([]byte, int64) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, offset
 	}
-	core.WriteFileAtomic(path, raw[n:], 0o600)
+	defer f.Close()
+	if st, err := f.Stat(); err != nil || st.Size() < offset {
+		offset = 0
+	}
+	raw, _ := io.ReadAll(io.NewSectionReader(f, offset, 1<<40))
+	raw = raw[:bytes.LastIndexByte(raw, '\n')+1] // a line still being written waits
+	return raw, offset + int64(len(raw))
 }
 
 var (
@@ -241,23 +255,23 @@ func failure(cfg core.Config, f Failure, root string) Report {
 
 // Build reads the journal since the last run that queued reports, from when
 // sharing was turned on, and returns one report per failure (oldest first),
-// the usage report, the last event seq it covers and how many bytes of the
-// outbox it read.
-func (m *Module) Build(cfg core.Config) ([]Report, Report, int64, int) {
+// the usage report, the last event seq it covers and the outbox offset it
+// read up to.
+func (m *Module) Build(cfg core.Config) ([]Report, Report, int64, int64) {
 	since, _ := cfg.Sharing()
 	use := map[string]float64{"runs": 0, "turns": 0, "merges": 0, "reverts": 0, "cost_usd": 0}
 	var fails []Failure
 	var from, to time.Time
-	var last, seq int64
+	var last, seq, boxAt int64
 	roles := map[string]string{}
 	stages := map[string]string{}
 	running := false
 	var events []core.Event
 	m.C.J.Replay(func(e core.Event) {
 		if e.Kind == "report.queued" {
-			var s struct{ Seq int64 }
+			var s struct{ Seq, Outbox int64 }
 			e.Decode(&s)
-			last = s.Seq
+			last, boxAt = s.Seq, s.Outbox
 		}
 		events = append(events, e)
 	})
@@ -345,8 +359,7 @@ func (m *Module) Build(cfg core.Config) ([]Report, Report, int64, int) {
 			running = false
 		}
 	}
-	box, _ := os.ReadFile(outbox(m.C.WS))
-	box = box[:bytes.LastIndexByte(box, '\n')+1] // a line still being written waits
+	box, boxEnd := unread(outbox(m.C.WS), boxAt)
 	for _, line := range bytes.Split(box, []byte("\n")) {
 		var f Failure
 		if json.Unmarshal(line, &f) == nil {
@@ -363,7 +376,7 @@ func (m *Module) Build(cfg core.Config) ([]Report, Report, int64, int) {
 		u.At = to.UTC().Format(time.RFC3339)
 		u.Message = fmt.Sprintf("harness %s; events from %s to %s", cfg.Harness, from.UTC().Format(time.RFC3339), u.At)
 	}
-	return reports, u, seq, len(box)
+	return reports, u, seq, boxEnd
 }
 
 // Sent lists the copies of sent reports, oldest first.

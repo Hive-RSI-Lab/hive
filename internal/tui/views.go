@@ -817,7 +817,7 @@ func (m *model) settings() []setting {
 				return flashMsg("`" + core.Cmd + " update --release <tag>` installs and pins a release")
 			}
 		}},
-		{group: "General", label: "share failures", value: share + "  (with the developer, scrubbed; `" + core.Cmd + " report` shows what was sent)", key: "share"},
+		{group: "General", label: "share failures", value: share + "  (scrubbed; `" + core.Cmd + " report` shows what was sent)", key: "share"},
 		{group: "Agents", label: "harness", value: c.Harness, key: "harness", choices: append(slices.Clone(harness.Names), custom)},
 		{group: "Agents", label: "worker model", value: c.Model, key: "model", choices: models},
 		{group: "Agents", label: "lead model", value: c.LeadModel, key: "lead_model", choices: models},

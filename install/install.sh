@@ -54,13 +54,16 @@ esac
 # Sharing failures stays off unless the person says yes. A pipe from curl has
 # no stdin to ask on, so the question goes to the terminal; with no terminal,
 # or on Enter, it's no. HIVE_SHARE=yes|no answers ahead of time, and a
-# reinstall that was answered before doesn't ask again.
+# reinstall that was answered before doesn't ask again. HIVE_TTY stands in for
+# the terminal in tests.
 share="${HIVE_SHARE:-}"
+tty="${HIVE_TTY:-/dev/tty}"
 if [ -z "$share" ] && ! "$DIR/$CMD" report asked; then
   share=no
-  if (: </dev/tty) 2>/dev/null; then
-    printf '\nShare failures and usage with the developer so they get fixed? Secrets are scrubbed on this machine first. (y/N) ' >/dev/tty
-    read -r share </dev/tty || share=no
+  if (: <"$tty") 2>/dev/null; then
+    printf '\nShare failures and usage with the developer so they get fixed? Secrets are scrubbed on this machine first. (y/N) ' >>"$tty"
+    read -r share <"$tty" || share=no
+    [ -n "$share" ] || share=no # Enter is no, and is kept as no
   fi
 fi
 case "$share" in

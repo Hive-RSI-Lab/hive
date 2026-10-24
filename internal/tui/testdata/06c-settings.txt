@@ -8,14 +8,15 @@
                       │     use ANTHROPIC_API_KEY       off
  ▾ textkit-2          │     release repo                ihsan-sa/hive
    lead               │     release                     the newest
-   writer             │
-   reviewer        ●  │   Agents
- ▾ hive-web           │     harness                     claude
-   lead            ●  │     worker model                opus
-   worker-2           │     lead model                  opus
-   reviewer           │     reviewer model              opus
-   tribunal           │     tribunal seat 1 model       opus
- ▸ website            │     tribunal seat 2 model       sonnet
+   writer             │     share failures              off  (scrubbed; `hive report` shows what was sent)
+   reviewer        ●  │
+ ▾ hive-web           │   Agents
+   lead            ●  │     harness                     claude
+   worker-2           │     worker model                opus
+   reviewer           │     lead model                  opus
+   tribunal           │     reviewer model              opus
+ ▸ website            │     tribunal seat 1 model       opus
+                      │     tribunal seat 2 model       sonnet
                       │     tribunal seat 3 model       fable
                       │     model for textkit-2         default
                       │     model for hive-web          default
@@ -28,9 +29,8 @@
                       │     improve.sweep               12 hours
                       │     kb.file                     daily 04:00
                       │     modules.update              24 hours
+                      │     report.send                 6 hours
                       │
                       │   Log in
-                      │     Claude Code                 runs Claude Code's own login
-                      │     GitHub                      runs the GitHub CLI's own login
 ──────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────
  ↑↓ move   enter change   tab sidebar
