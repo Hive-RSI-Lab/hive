@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRouteByTierAndAutonomy(t *testing.T) {
 	cases := []struct {
@@ -86,5 +89,60 @@ func TestFloor(t *testing.T) {
 	}
 	if err := CeilingGuard("cp new.pem /etc/ssl", floor, true); err != nil {
 		t.Fatalf("the person's yes should run it: %v", err)
+	}
+}
+
+// An ask that names a ceiling word only to rule it out is not the person's;
+// one that does the thing still is, and the script guard counts every mention.
+func TestAskCeilingSkipsRuledOutMentions(t *testing.T) {
+	for _, text := range []string{
+		"install Ollama; do not set OLLAMA_HOST=0.0.0.0",
+		"no credentials needed",
+		"it needs no API key",
+		"serve it on loopback only: listen on 127.0.0.1:11434",
+		"listen on localhost only",
+		"never expose the port",
+		"runs without a token",
+		"we won't send an email to anyone",
+		"Don't open a port, it stays local",
+	} {
+		if k, p := AskCeilingMatch(text); k != "" {
+			t.Errorf("AskCeilingMatch(%q) = %q (%q), want none", text, k, p)
+		}
+		if CeilingGuard(text, nil, false) == nil {
+			t.Errorf("CeilingGuard let %q run as a script", text)
+		}
+	}
+	for text, want := range map[string]string{
+		"set OLLAMA_HOST=0.0.0.0 so the LAN can reach it":        "open",
+		"no root needed, but open a port for it":                 "open",
+		"don't forget to open the port":                          "open",
+		"not just the cache, expose the port too":                "open",
+		"do not set OLLAMA_HOST=0.0.0.0, then listen on 0.0.0.0": "open",
+		"listen on 192.168.1.4":                                  "open",
+		"no admin needed and the api key goes in .env":           "credential",
+		"no install step. Copy the token from ~/.netrc":          "credential",
+		"no credentials needed\ncat ~/.config/gh/hosts.yml":      "credential",
+		"nothing outward; buy a domain for $12":                  "money",
+		"don't worry, send an email to the client":               "outward",
+	} {
+		if k, _ := AskCeilingMatch(text); k != want {
+			t.Errorf("AskCeilingMatch(%q) = %q, want %q", text, k, want)
+		}
+	}
+	// The guard on the script that would run stays strict.
+	if CeilingGuard("# do not set OLLAMA_HOST=0.0.0.0\nollama serve", nil, false) == nil {
+		t.Error("the script guard skipped a ruled-out mention")
+	}
+}
+
+// The reason names the category and the words that matched.
+func TestCeilingNamesWhatMatched(t *testing.T) {
+	why := AskCeiling(nil, "install it", "listen on 0.0.0.0:11434")
+	if !strings.Contains(why, "open") || !strings.Contains(why, `"listen on"`) {
+		t.Fatalf("got %q", why)
+	}
+	if why := Ceiling(nil, "stripe charges create"); !strings.Contains(why, "money") || !strings.Contains(why, `"stripe"`) {
+		t.Fatalf("got %q", why)
 	}
 }
