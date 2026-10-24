@@ -71,7 +71,7 @@ func probeOrg(cfg *Config, c *Child) Result {
 	}
 	steps := [][]string{
 		{"clone", "-q", c.RepoURL, dir},
-		{"-C", dir, "checkout", "-q", "-b", "main"},
+		{"-C", dir, "checkout", "-q", "-B", "main"},
 		{"-C", dir, "commit", "-q", "--allow-empty", "-m", "gate " + c.Name},
 		{"-C", dir, "push", "-q", "origin", "main"},
 	}
@@ -147,12 +147,13 @@ func probeRecurse(cfg *Config, c *Child) Result {
 	if c.Depth <= 0 {
 		return Result{Pass: true, Detail: "depth cap reached: not nested further"}
 	}
-	out, err := c.Exec(30*time.Minute, c.Root, c.Bin, "gate", "--self-test", "--out", filepath.Join(c.Root, "grandchild"))
+	nested := filepath.Join(c.Root, "grandchild")
+	os.RemoveAll(nested)
+	out, _ := c.Exec(30*time.Minute, c.Root, c.Bin, "gate", "--self-test", "--out", nested) // a rollback exits non-zero; the report says what happened
 	var rep Report
-	if i := strings.Index(out, "{"); i >= 0 {
-		json.Unmarshal([]byte(out[i:]), &rep)
+	if raw, err := os.ReadFile(filepath.Join(nested, "report.json")); err == nil {
+		json.Unmarshal(raw, &rep)
 	}
-	_ = err // a rollback verdict exits non-zero; the report says what happened
 	switch {
 	case rep.ID == "":
 		return Result{Detail: "no report from the nested gate: " + tail(out, 300)}
