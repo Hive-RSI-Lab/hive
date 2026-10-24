@@ -122,6 +122,8 @@ type Module struct {
 	// already raised, so each is raised once whatever the tasks say now. It
 	// grows by one key per red main commit and isn't pruned; that's small.
 	mainRed map[string]bool
+	// offline is why the forge was last unreachable, until a step succeeds.
+	offline string
 }
 
 // New loads tasks and registers the brief op.
@@ -231,15 +233,19 @@ func (m *Module) opBrief(r core.Run, args json.RawMessage) (any, error) {
 	if b.Project == "" {
 		b.Project = r.Project
 	}
-	// An agent with no project of its own names the target: the only project
-	// is not a safe guess, since the ask may be a module or about the Hive.
-	if b.Project == "" {
-		names := []string{}
-		for _, p := range m.C.Projects.List() {
-			if m.C.Runs.Walled(r, p.Name) == nil {
-				names = append(names, p.Name)
-			}
+	// An agent with no project of its own names the target. For the lead the
+	// only project is not a safe guess, since the ask may be a module or about
+	// the Hive; a sweep's findings come from the records, so it may be.
+	names := []string{}
+	for _, p := range m.C.Projects.List() {
+		if m.C.Runs.Walled(r, p.Name) == nil {
+			names = append(names, p.Name)
 		}
+	}
+	if b.Project == "" && r.Role == "sweep" && len(names) == 1 {
+		b.Project = names[0]
+	}
+	if b.Project == "" {
 		return nil, fmt.Errorf("say which project with --project (one of: %s) and tell the person why; a new module gets a project of its own first (create_project), then install_module --project", strings.Join(names, ", "))
 	}
 	if err := m.C.Runs.Walled(r, b.Project); err != nil {
@@ -339,10 +345,25 @@ func (m *Module) Tick() {
 		m.mu.Unlock()
 		go func(t Task) {
 			defer func() { m.mu.Lock(); delete(m.busy, t.ID); m.mu.Unlock() }()
-			if err := m.step(&t); err != nil {
+			err := m.step(&t)
+			why := ""
+			if err != nil {
+				why = core.Unreachable("GitHub", err.Error())
+			}
+			m.mu.Lock()
+			if why != "" || err == nil {
+				m.offline = why
+			}
+			m.mu.Unlock()
+			if err != nil {
 				t.Failures++
 				t.Retry = time.Now().Add(time.Duration(min(t.Failures, 6)) * 30 * time.Second)
 				msg := err.Error()
+				if why != "" {
+					// An outage isn't the task's fault, so it waits it out.
+					m.save(&t, why+"; retrying")
+					return
+				}
 				if t.Failures >= 8 {
 					t.Stage, t.Reason = StageStopped, "gave up after repeated errors: "+msg
 					m.save(&t, t.Reason)
@@ -353,6 +374,13 @@ func (m *Module) Tick() {
 			}
 		}(t)
 	}
+}
+
+// Offline says why the forge can't be reached, or "" when it can.
+func (m *Module) Offline() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.offline
 }
 
 func (m *Module) project(t *Task) (core.Project, error) {

@@ -335,10 +335,18 @@ func sudoFact() string {
 }
 
 // quote fences another agent's words so they read as data; more is other
-// agent-written lines that go inside the same fence.
+// agent-written lines that go inside the same fence. The marker is random,
+// and "<<<" is broken up inside the data, so an agent can't close the fence
+// early even if it guesses the marker.
 func quote(req Request, more ...string) string {
-	f := "<<<" + core.NewID()[:8]
-	return fmt.Sprintf("%s\nwant: %s\nwhy: %s\ntier: %s\nsteps:\n%s\n%s%s", f, req.Want, req.Why, req.Tier, req.Steps, strings.Join(more, ""), f)
+	f := "<<<" + core.NewUUID()
+	d := func(s string) string {
+		for strings.Contains(s, "<<<") {
+			s = strings.ReplaceAll(s, "<<<", "<< <")
+		}
+		return s
+	}
+	return fmt.Sprintf("%s\nwant: %s\nwhy: %s\ntier: %s\nsteps:\n%s\n%s%s", f, d(req.Want), d(req.Why), d(req.Tier), d(req.Steps), d(strings.Join(more, "")), f)
 }
 
 func (m *Module) spawnWarden(req *Request) error {
@@ -802,7 +810,7 @@ func (m *Module) onAnswer(a core.Ask) {
 	m.save(&req)
 	m.act.Unlock()
 	if req.Settles != nil {
-		m.settle(req, false)
+		m.settle(req, req.State == "done")
 		return
 	}
 	text := fmt.Sprintf("the person answered %q: %s", core.Clip(req.Want, 80), a.Answer)
