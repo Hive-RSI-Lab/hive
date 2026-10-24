@@ -477,3 +477,38 @@ func TestHidingIsolatedNotesFollowsNoLink(t *testing.T) {
 		t.Error("the notes folder was made where the link points")
 	}
 }
+
+// While a restart waits for a quiet moment no new turn starts, and Live
+// counts the turns still running.
+func TestHoldKeepsNewTurnsBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sleep stands in for a turn")
+	}
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "j.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	rs := NewRuns(Workspace{Root: t.TempDir()}, j, nil, nil, func() []string { return nil }) // a launch past the hold would call the nil sandbox
+	r, err := rs.Start(RunSpec{ID: "new", Harness: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs.Hold("waiting: a restart")
+	rs.launch(r, Config{})
+	if got, _ := rs.Get("new"); got.Status != StatusQueued {
+		t.Fatalf("a held run went to %s", got.Status)
+	}
+	if rs.Live() != 0 {
+		t.Fatal("no turn runs yet")
+	}
+	h, err := proc.StartDetached([]string{"sleep", "60"}, os.Environ(), t.TempDir(), "", filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.Kill(h)
+	rs.append("run.turn_started", turnStarted{ID: "new", Turn: 1, Proc: h})
+	if rs.Live() != 1 {
+		t.Fatal("the running turn isn't counted")
+	}
+}
