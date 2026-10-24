@@ -59,3 +59,6 @@
 
 ## 2026-10-23 Projects list the files their score reads
 - Decision: the setup brief, the README and the lead's guidance say to list every file the score reads in its `paths`, and a score set or changed with an empty `paths` raises a `score-paths` alert (at the start and when the score's version changes) | Why: the `./` guess misses a script the score calls, a test or a data file, which a candidate could still change (perms' read of the fixed-evaluator change) | Tradeoff: a warning, not a refusal, since only the project knows what its score reads.
+
+## 2026-10-23 The Hive's own repo guards its root paths by default
+- Decision: self projects always class the sandbox, the risk module, setup and the installers as root, and the gate's credential code, harness logins, release/daemon and the warden/tribunal prompts as high, joined in `Classify` from the binary (docs/root-paths.md) | Why: the Hive's project.json named no classes, so the code that acts outside the box got one read and released unasked | Tradeoff: more changes to the Hive need two reads, and root ones wait for the person at release.
