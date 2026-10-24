@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // A detached process leads its own session, so whatever kills the starter's
@@ -23,7 +25,7 @@ func TestStartDetachedLeadsItsOwnSession(t *testing.T) {
 	}
 	defer Kill(h)
 	time.Sleep(100 * time.Millisecond)
-	if sid, err := syscall.Getsid(h.PID); err != nil || sid != h.PID {
+	if sid, err := unix.Getsid(h.PID); err != nil || sid != h.PID {
 		t.Fatalf("session %d, %v: want %d", sid, err, h.PID)
 	}
 	if pg, _ := syscall.Getpgid(h.PID); pg == syscall.Getpgrp() {
