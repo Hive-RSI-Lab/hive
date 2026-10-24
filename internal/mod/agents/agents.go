@@ -44,6 +44,9 @@ func (a *Agents) System(role, project string) string {
 func (a *Agents) Model(role, project string) (harness, model string) {
 	cfg := a.C.WS.LoadConfig()
 	harness, model = cfg.Harness, cfg.Model
+	if role == "lead" && cfg.LeadModel != "" {
+		model = cfg.LeadModel // a project's own model, below, is more specific
+	}
 	if ps, ok := cfg.Projects[project]; ok {
 		if ps.Harness != "" {
 			harness = ps.Harness
@@ -76,8 +79,8 @@ func (a *Agents) Scratch(id string) (string, error) {
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
-// Spawner is the core's spawn hook: a helper gets a fresh checkout of the
-// project at main on its own branch (or a scratch dir with no project).
+// Spawner makes the runs the work module's spawn hook passes on: a reviewer
+// gets a fresh checkout of the project at main (a scratch dir with no project).
 func (a *Agents) Spawner(parent core.Run, role, project, brief, model string) (core.RunSpec, error) {
 	id := core.NewID()
 	dir := ""

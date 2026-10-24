@@ -31,9 +31,14 @@ func (w Workspace) Run(id string) string       { return filepath.Join(w.Runs(), 
 func (w Workspace) Chats() string              { return filepath.Join(w.Hive(), "chats") }
 func (w Workspace) KB() string                 { return filepath.Join(w.Hive(), "kb") }
 func (w Workspace) ConfigPath() string         { return filepath.Join(w.Hive(), "config.json") }
-func (w Workspace) DaemonFile() string         { return filepath.Join(w.Hive(), "daemon.json") }
+func (w Workspace) DaemonFile() string         { return filepath.Join(w.Private(), "daemon.json") }
 func (w Workspace) Bin() string                { return filepath.Join(w.Hive(), "bin") }
 func (w Workspace) Gates() string              { return filepath.Join(w.Hive(), "gates") }
+
+// Private holds what grants access (the daemon's token, each run's home and
+// CODEX_HOME). It is covered as a whole wherever agents read .hive, so a run
+// made or a file renamed in it mid-turn is covered too.
+func (w Workspace) Private() string { return filepath.Join(w.Hive(), "private") }
 
 // Checkouts is where agents' own checkouts of a project live.
 func (w Workspace) Checkouts(project string) string {
@@ -46,8 +51,11 @@ type Config struct {
 	Autonomy       int            `json:"autonomy"`
 	Harness        string         `json:"harness"`
 	Model          string         `json:"model"`
+	LeadModel      string         `json:"lead_model"`
 	ReviewerModel  string         `json:"reviewer_model"`
 	TribunalModels []TribunalSeat `json:"tribunal_models"`
+	// ModelChoices adds models to the harness's known list in Settings' pick-lists.
+	ModelChoices []string `json:"model_choices,omitempty"`
 	// Egress holds runs to the hosts listed; with no list a run reaches every
 	// public host.
 	Egress Egress `json:"egress"`
@@ -61,6 +69,8 @@ type Config struct {
 	WSLDistro    string                     `json:"wsl_distro,omitempty"`
 	ReleaseRepo  string                     `json:"release_repo"`
 	AutoUpdate   bool                       `json:"auto_update"`
+	ReleasePin   string                     `json:"release_pin,omitempty"`        // the release `hive update --release` chose; auto-update stays on it
+	PinnedAuto   bool                       `json:"pinned_auto_update,omitempty"` // auto_update before the pin turned it off; clearing the pin restores it
 	APIKeyOptIn  bool                       `json:"api_key_opt_in"`
 	ReviewRounds int                        `json:"review_rounds"`
 	Projects     map[string]ProjectSettings `json:"projects,omitempty"`
@@ -171,7 +181,8 @@ func DefaultConfig() Config {
 	return Config{
 		Autonomy:       2,
 		Harness:        "claude",
-		Model:          "sonnet",
+		Model:          "opus",
+		LeadModel:      "opus",
 		ReviewerModel:  "opus",
 		TribunalModels: []TribunalSeat{{Model: "opus"}, {Model: "sonnet"}, {Model: "fable"}},
 		Sandbox:        "auto",
@@ -215,6 +226,14 @@ func (w Workspace) ReadConfig() (Config, error) {
 	raw, err := os.ReadFile(w.ConfigPath())
 	if err == nil {
 		err = json.Unmarshal(raw, &c)
+		// A config from before lead_model: a model the person chose stays the
+		// lead's; the old default ("sonnet") moves the lead to opus.
+		var had struct {
+			LeadModel *string `json:"lead_model"`
+		}
+		if json.Unmarshal(raw, &had) == nil && had.LeadModel == nil && c.Model != "sonnet" {
+			c.LeadModel = c.Model
+		}
 	} else if os.IsNotExist(err) {
 		err = nil
 	}
@@ -322,6 +341,9 @@ func (w Workspace) Init() error {
 			return err
 		}
 	}
+	if err := os.MkdirAll(w.Private(), 0o700); err != nil {
+		return err
+	}
 	if !exists(w.ConfigPath()) {
 		return w.SaveConfig(DefaultConfig())
 	}
@@ -338,3 +360,17 @@ func Exists(p string) bool { return exists(p) }
 
 // ErrNotFound is returned for missing records.
 var ErrNotFound = errors.New("not found")
+
+// IsolatedKB makes and returns an isolated project's notes folder, refusing
+// one that isn't a real folder, such as a link a filer planted.
+func (w Workspace) IsolatedKB(project string) (string, error) {
+	dir := w.KB()
+	for _, d := range []string{"isolated", project} {
+		dir = filepath.Join(dir, d)
+		os.Mkdir(dir, 0o755)
+		if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+			return "", fmt.Errorf("%s is not a real folder", dir)
+		}
+	}
+	return dir, nil
+}
