@@ -19,6 +19,10 @@ import (
 type flakyForge struct {
 	*core.Local
 	fail   int
+	down   bool
+	users  int
+	refuse bool
+	hold   chan struct{} // the first User call waits for it to close
 	closed []int
 	bodies []string
 }
@@ -26,6 +30,20 @@ type flakyForge struct {
 func (f *flakyForge) CreatePR(repo, head, base, title, body string) (core.PR, error) {
 	f.bodies = append(f.bodies, body)
 	return f.Local.CreatePR(repo, head, base, title, body)
+}
+
+func (f *flakyForge) User() (string, error) {
+	f.users++
+	if f.hold != nil && f.users == 1 {
+		<-f.hold
+	}
+	if f.down {
+		return "", errors.New("dial tcp: lookup api.github.com: no such host")
+	}
+	if f.refuse {
+		return "", errors.New("HTTP 403: Resource not accessible by integration")
+	}
+	return f.Local.User()
 }
 
 func (f *flakyForge) CloseIssue(repo string, number int) error {
@@ -123,6 +141,148 @@ func TestCloseIssueGivesUp(t *testing.T) {
 	if task.Stage != StageDone || task.IssueOpen || forge.fail != 92 || !logged(task, "gave up closing the issue, left open on the forge: HTTP 503") {
 		t.Fatalf("stage %q, issue open %v, attempts %d, log %v", task.Stage, task.IssueOpen, 100-forge.fail, task.Log)
 	}
+}
+
+// While GitHub is unreachable a task's gaps grow to a ceiling and it's never
+// stopped; the first step that gets through wakes every waiting task at once.
+func TestOutageBacksOffAndWakes(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	var gaps []time.Duration
+	for range 20 {
+		m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+		gaps = append(gaps, time.Until(task.Retry).Round(time.Second))
+	}
+	why := "can't reach GitHub: no internet connection"
+	if task.Stage != StageLanding || task.Failures != 0 || m.Offline() != why || !logged(task, why+"; retrying") {
+		t.Fatalf("stage %q, failures %d, offline %q, log %v", task.Stage, task.Failures, m.Offline(), task.Log)
+	}
+	if gaps[0] != 30*time.Second || gaps[1] != time.Minute || gaps[4] != 8*time.Minute || gaps[5] != 10*time.Minute || gaps[19] != 10*time.Minute {
+		t.Fatalf("gaps %v", gaps)
+	}
+	if m.due(*task) {
+		t.Fatal("due inside its gap while offline")
+	}
+	forge.down = true
+	m.settle(&Task{ID: "t2"}, nil) // a step that never touched GitHub
+	if m.Offline() != why || m.due(*task) {
+		t.Fatalf("offline %q, due %v after a step that proves nothing", m.Offline(), m.due(*task))
+	}
+	forge.down = false
+	passGap(m)                     // the shared check's gap is over
+	m.settle(&Task{ID: "t2"}, nil) // and once GitHub answers
+	if m.Offline() != "" || !m.due(*task) {
+		t.Fatalf("offline %q, due %v once back", m.Offline(), m.due(*task))
+	}
+	// A real error after the outage counts from zero and keeps its own gap.
+	m.settle(task, errors.New("HTTP 422"))
+	if task.Failures != 1 || task.Stage != StageLanding || m.due(*task) {
+		t.Fatalf("failures %d, stage %q, due %v", task.Failures, task.Stage, m.due(*task))
+	}
+}
+
+// Idle tasks during an outage share one GitHub check per backoff step.
+func TestOutageChecksOncePerStep(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	forge.down = true
+	for step, gap := range []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute} {
+		for range 50 {
+			m.settle(&Task{ID: "idle"}, nil)
+		}
+		if forge.users != step+1 || m.Offline() == "" {
+			t.Fatalf("step %d: %d checks, offline %q", step, forge.users, m.Offline())
+		}
+		if got := nextCheck(m); got != gap {
+			t.Fatalf("step %d: next check in %v, want %v", step, got, gap)
+		}
+		passGap(m)
+	}
+}
+
+// A second outage right after a recovery gets its first check at once.
+func TestOutageAfterRecoveryChecksAtOnce(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	m.settle(&Task{ID: "idle"}, nil) // GitHub answers
+	if m.Offline() != "" {
+		t.Fatalf("offline %q after recovery", m.Offline())
+	}
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	forge.down = true
+	m.settle(&Task{ID: "idle"}, nil)
+	if forge.users != 2 {
+		t.Fatalf("%d checks, want the new outage checked at once", forge.users)
+	}
+}
+
+// One check is out at a time: idle tasks don't start another while it hangs
+// past its gap, and when it answers every waiting task wakes.
+func TestOutageOneCheckAtATime(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	release := holdCheck(m, forge)
+	passGap(m)
+	for range 50 {
+		m.settle(&Task{ID: "idle"}, nil)
+	}
+	release()
+	if forge.users != 1 || m.Offline() != "" || !m.due(*task) {
+		t.Fatalf("%d checks, offline %q, due %v", forge.users, m.Offline(), m.due(*task))
+	}
+}
+
+// A step that fails while a check is out isn't wiped when the check answers.
+func TestOutageDuringCheckSticks(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	release := holdCheck(m, forge)
+	m.settle(task, errors.New("dial tcp: i/o timeout"))
+	release()
+	if why := "can't reach GitHub: the connection failed"; m.Offline() != why || m.due(*task) {
+		t.Fatalf("offline %q, due %v", m.Offline(), m.due(*task))
+	}
+}
+
+// A check refused for a reason other than the network says GitHub is back.
+func TestOutageCheckOtherErrorClears(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	forge.refuse = true
+	m.settle(&Task{ID: "idle"}, nil)
+	if m.Offline() != "" || !m.due(*task) {
+		t.Fatalf("offline %q, due %v", m.Offline(), m.due(*task))
+	}
+}
+
+// holdCheck starts an idle task's GitHub check and leaves it hanging; release
+// lets it answer and waits for that settle to return.
+func holdCheck(m *Module, forge *flakyForge) (release func()) {
+	forge.hold = make(chan struct{})
+	done := make(chan struct{})
+	go func() { m.settle(&Task{ID: "slow"}, nil); close(done) }()
+	for {
+		m.mu.Lock()
+		out := m.probing
+		m.mu.Unlock()
+		if out {
+			return func() { close(forge.hold); <-done }
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// passGap ends the shared check's gap.
+func passGap(m *Module) {
+	m.mu.Lock()
+	m.probe = time.Time{}
+	m.mu.Unlock()
+}
+
+// nextCheck is how long until the shared check may run again.
+func nextCheck(m *Module) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return time.Until(m.probe).Round(time.Second)
 }
 
 // A done task whose project is gone drops its pending close and stays done.

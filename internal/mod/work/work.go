@@ -124,8 +124,15 @@ type Module struct {
 	// already raised, so each is raised once whatever the tasks say now. It
 	// grows by one key per red main commit and isn't pruned; that's small.
 	mainRed map[string]bool
-	// offline is why the forge was last unreachable, until a step succeeds.
+	// offline is why the forge was last unreachable, until it answers again;
+	// downs counts the failed steps and checks since, probe is when it may next
+	// be checked, probing says a check is out, and online is when it last came
+	// back.
 	offline string
+	downs   int
+	probe   time.Time
+	probing bool
+	online  time.Time
 }
 
 // New loads tasks and registers the brief op.
@@ -336,11 +343,8 @@ func (m *Module) Revert(of Task, mergeSHA, reason string) (Task, error) {
 // Tick advances every task that isn't already being worked on.
 func (m *Module) Tick() {
 	for _, t := range m.List(func(t Task) bool { return !t.Terminal() || t.IssueOpen || m.woke(t) }) {
-		if time.Now().Before(t.Retry) {
-			continue
-		}
 		m.mu.Lock()
-		if m.busy[t.ID] {
+		if !m.due(t) || m.busy[t.ID] {
 			m.mu.Unlock()
 			continue
 		}
@@ -348,33 +352,79 @@ func (m *Module) Tick() {
 		m.mu.Unlock()
 		go func(t Task) {
 			defer func() { m.mu.Lock(); delete(m.busy, t.ID); m.mu.Unlock() }()
-			err := m.step(&t)
-			why := ""
-			if err != nil {
-				why = core.Unreachable("GitHub", err.Error())
-			}
-			m.mu.Lock()
-			if why != "" || err == nil {
-				m.offline = why
-			}
-			m.mu.Unlock()
-			if err != nil {
-				t.Failures++
-				t.Retry = time.Now().Add(time.Duration(min(t.Failures, 6)) * 30 * time.Second)
-				msg := err.Error()
-				if why != "" {
-					// An outage isn't the task's fault, so it waits it out.
-					m.save(&t, why+"; retrying")
-					return
-				}
-				if t.Failures >= 8 {
-					m.giveUp(&t, "gave up after repeated errors: "+msg)
-					return
-				}
-				m.save(&t, "error (will retry): "+core.Clip(msg, 300))
-			}
+			m.settle(&t, m.step(&t))
 		}(t)
 	}
+}
+
+// due reports whether a task's retry gap is over; a task saved before the
+// forge came back goes at once. The caller holds m.mu.
+func (m *Module) due(t Task) bool {
+	return !time.Now().Before(t.Retry) || !t.Updated.After(m.online)
+}
+
+// settle records how a step ended.
+func (m *Module) settle(t *Task, err error) {
+	why := ""
+	if err != nil {
+		why = core.Unreachable("GitHub", err.Error())
+	}
+	// Many steps succeed without touching GitHub, so only a direct check says
+	// it's back, and the tasks share one check at a time that backs off as
+	// they do. Any answer but a network failure counts as back.
+	m.mu.Lock()
+	probe := err == nil && m.offline != "" && !m.probing && !time.Now().Before(m.probe)
+	downs := m.downs
+	if probe {
+		m.probe, m.probing = time.Now().Add(backoff(m.downs)), true
+	}
+	m.mu.Unlock()
+	cwhy := ""
+	if probe {
+		if _, cerr := m.C.Effects.Forge.User(); cerr != nil {
+			cwhy = core.Unreachable("GitHub", cerr.Error())
+		}
+	}
+	m.mu.Lock()
+	if probe {
+		m.probing = false
+	}
+	switch {
+	case why != "":
+		m.offline = why
+		m.downs++
+	case probe && cwhy != "":
+		m.offline = cwhy
+		m.downs++
+	case probe && m.downs == downs: // no step failed while it was out
+		m.offline, m.downs, m.probe, m.online = "", 0, time.Time{}, time.Now().UTC()
+	}
+	downs = m.downs
+	m.mu.Unlock()
+	if err == nil {
+		return
+	}
+	if why != "" {
+		// An outage isn't the task's fault, so it waits it out without counting
+		// a failure, checking back less often the longer it lasts.
+		t.Retry = time.Now().Add(backoff(downs))
+		m.save(t, why+"; retrying")
+		return
+	}
+	t.Failures++
+	t.Retry = time.Now().Add(time.Duration(min(t.Failures, 6)) * 30 * time.Second)
+	msg := err.Error()
+	if t.Failures >= 8 {
+		m.giveUp(t, "gave up after repeated errors: "+msg)
+		return
+	}
+	m.save(t, "error (will retry): "+core.Clip(msg, 300))
+}
+
+// backoff is the gap after the nth failed step of an outage: 30s doubling to
+// a 10 minute ceiling.
+func backoff(n int) time.Duration {
+	return min(30*time.Second<<min(max(n, 1)-1, 5), 10*time.Minute)
 }
 
 // Offline says why the forge can't be reached, or "" when it can.
