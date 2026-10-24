@@ -3,6 +3,8 @@ package improve
 import (
 	"strings"
 	"testing"
+
+	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 )
 
 func TestMissingTool(t *testing.T) {
@@ -30,20 +32,29 @@ func TestMissingTool(t *testing.T) {
 	}
 }
 
-// Different plain failures get different keys; a repeat with fresh timings
-// keeps its key; a missing program is keyed on its cause and reads as one
-// sentence.
+// Different plain failures get different keys, even under a long shared
+// header; a repeat with fresh timings keeps its key; a missing program is
+// keyed on its cause and reads as one sentence. Notes are built the way
+// measure builds them: clipped to one line.
 func TestBaselineAlertKey(t *testing.T) {
-	_, a := baselineAlert("p", false, "tests red: AssertionError: expected 1\nrun took 0.31s")
-	_, a2 := baselineAlert("p", false, "tests red: AssertionError: expected 1\nrun took 0.47s")
-	_, b := baselineAlert("p", false, "tests red: Segmentation fault")
+	red := func(out string) string { return "tests red: " + core.Clip(out, 600) }
+	_, a := baselineAlert("p", false, red("AssertionError: expected 1\nrun took 0.31s"))
+	_, a2 := baselineAlert("p", false, red("AssertionError: expected 1\nrun took 0.47s"))
+	_, b := baselineAlert("p", false, red("Segmentation fault"))
 	if a != a2 || a == b || a == "test" {
 		t.Errorf("keys: %q %q %q", a, a2, b)
 	}
-	_, t1 := baselineAlert("p", false, "tests red: --- FAIL: TestX (0.01s)")
-	_, t2 := baselineAlert("p", false, "tests red: --- FAIL: TestX (2.40s)")
-	if t1 != t2 {
-		t.Errorf("timings split the key: %q %q", t1, t2)
+	banner := "============================= test session starts ==============================\n" +
+		"platform linux -- Python 3.12.3, pytest-8.3.2, pluggy-1.5.0\n" +
+		"rootdir: /work/textkit-2\nconfigfile: pyproject.toml\nplugins: cov-5.0.0, xdist-3.6.1\ncollected 42 items\n\n"
+	if len(banner) <= 200 {
+		t.Fatalf("banner too short to test a shared header: %d", len(banner))
+	}
+	_, p1 := baselineAlert("p", false, red(banner+"tests/test_a.py F\nE AssertionError: expected 1 (0.12s)"))
+	_, p1b := baselineAlert("p", false, red(banner+"tests/test_a.py F\nE AssertionError: expected 1 (0.98s)"))
+	_, p2 := baselineAlert("p", false, red(banner+"tests/test_b.py F\nE KeyError: 'name'"))
+	if p1 != p1b || p1 == p2 {
+		t.Errorf("pytest keys: %q %q %q", p1, p1b, p2)
 	}
 	text, key := baselineAlert("p", false, "tests red: sh: 1: python3: not found")
 	if !strings.HasPrefix(key, "python3 isn't installed") || strings.Contains(text, ".;") || !strings.HasSuffix(text, "Measuring again in 10 minutes.") {

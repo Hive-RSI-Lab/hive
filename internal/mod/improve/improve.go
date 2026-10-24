@@ -4,6 +4,8 @@
 package improve
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -526,9 +528,10 @@ func (m *Module) Digest(since int64, only string) string {
 }
 
 // baselineAlert gives the text and dedup key of a start with no number. A
-// missing program is keyed on its plain-words cause; any other failure on its
-// first line of output with digits blanked, so a repeat with fresh timings
-// refreshes one alert while a different failure is a new one.
+// missing program is keyed on its plain-words cause; any other failure on the
+// whole note (the clipped, one-line check output) with digits blanked, so a
+// repeat with fresh timings refreshes one alert while a different failure is a
+// new one, even under a long fixed header like pytest's session banner.
 func baselineAlert(project string, testsOK bool, note string) (text, key string) {
 	kind := "test"
 	if testsOK {
@@ -542,15 +545,11 @@ func baselineAlert(project string, testsOK bool, note string) (text, key string)
 
 var digits = regexp.MustCompile(`\d+`)
 
-// failureCause is the first non-empty line of a failure note, with runs of
-// digits blanked so timings and counts don't make a new cause.
+// failureCause is a short digest of a failure note with runs of digits
+// blanked, so timings and counts don't make a new cause.
 func failureCause(note string) string {
-	for _, l := range strings.Split(note, "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			return core.Clip(digits.ReplaceAllString(l, "#"), 200)
-		}
-	}
-	return ""
+	sum := sha256.Sum256([]byte(digits.ReplaceAllString(strings.Join(strings.Fields(note), " "), "#")))
+	return hex.EncodeToString(sum[:8])
 }
 
 // notFound matches the shell's program-not-found lines (dash "sh: 1: X: not
