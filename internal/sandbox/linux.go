@@ -152,7 +152,7 @@ func Exec(specPath string) int {
 				refused = f
 			}
 		}
-		defer ServeEgress(ln, s.Allow, refused).Close()
+		defer ServeEgress(ln, s.Allow, s.Local, refused).Close()
 	}
 	for _, t := range s.Tools {
 		p, err := findTool(t)
@@ -382,6 +382,9 @@ func Init(argPath string) int {
 			return fail("forwarder", err)
 		}
 		go forward(ln, "/hive/egress.sock")
+		if err := forwardLocal(s.Local, "/hive/egress.sock"); err != nil {
+			return fail("granted local port", err)
+		}
 	}
 
 	// Resolve against the sandbox's PATH: exec.Command would look the name up
