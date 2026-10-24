@@ -160,6 +160,43 @@ func TestGiveUpComesBack(t *testing.T) {
 	}
 }
 
+// A task the person stopped, from the control center or by leaving its PR
+// open, stays stopped: the lead can neither recheck it nor send its worker back.
+func TestPersonStopHolds(t *testing.T) {
+	for _, how := range []string{"stop", "leave open"} {
+		m, _, task, _ := noCommitRig(t, 0)
+		task.Stage = StagePerson
+		m.save(task, "waiting on the person")
+		if how == "stop" {
+			m.Stop(task.ID, "stopped by the person")
+		} else {
+			m.onPersonMerge(core.Ask{Ref: task.ID + "@abc", Answer: "leave open"})
+		}
+		for _, back := range []string{"", "try again"} {
+			if err := m.Recheck(task.ID, back); err == nil || !strings.Contains(err.Error(), "by the person") {
+				t.Fatalf("%s: recheck %q got %v", how, back, err)
+			}
+		}
+		if got, _ := m.Get(task.ID); got.Stage != StageStopped {
+			t.Fatalf("%s: stage %q", how, got.Stage)
+		}
+	}
+}
+
+// A lead can't recheck a task in a project walled off from it.
+func TestRecheckWalled(t *testing.T) {
+	m, _, _, _ := noCommitRig(t, 0)
+	m.C.Projects.Add(core.Project{Name: "secret", Repo: "me/secret", Isolated: true})
+	task := &Task{ID: "t9", Project: "secret", Title: "x", Kind: "work"}
+	m.giveUp(task, "gave up")
+	if _, err := m.opRecheck(core.Run{RunSpec: core.RunSpec{ID: "lead", Role: "lead", Project: "p"}}, []byte(`{"task":"t9"}`)); err == nil {
+		t.Fatal("a walled lead rechecked another project's task")
+	}
+	if got, _ := m.Get("t9"); got.Stage != StageStopped {
+		t.Fatalf("stage %q", got.Stage)
+	}
+}
+
 // helperRig is a work module on a project with one commit on main, in bare
 // sandboxes so a checkout's commits can be extracted.
 func helperRig(t *testing.T) (*Module, *flakyForge, core.Project) {
@@ -274,8 +311,9 @@ func TestHelperNoCommitsIsDone(t *testing.T) {
 }
 
 // A lead with no project of its own must name one even when only one exists,
-// since the ask may be a module or about the Hive itself; a project's own
-// agents file to their project. An isolated project it can't reach goes unnamed.
+// since the ask may be a module or about the Hive itself; a sweep files to the
+// only project, and a project's own agents file to their project. An isolated
+// project it can't reach goes unnamed.
 func TestBriefNamesItsProject(t *testing.T) {
 	m, _, _, _ := noCommitRig(t, 0)
 	m.C.Projects.Add(core.Project{Name: "secret", Repo: "me/secret", Isolated: true})
@@ -286,11 +324,14 @@ func TestBriefNamesItsProject(t *testing.T) {
 	if len(m.List(nil)) != 0 {
 		t.Fatal("a refused brief filed a task")
 	}
+	if _, err := m.opBrief(core.Run{RunSpec: core.RunSpec{ID: "s", Role: "sweep"}}, []byte(`{"title":"a sweep finding"}`)); err != nil {
+		t.Fatalf("a sweep with one project to file in was refused: %v", err)
+	}
 	if _, err := m.opBrief(core.Run{RunSpec: core.RunSpec{ID: "w", Role: "worker", Project: "p"}}, []byte(`{"title":"a follow-up"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if ts := m.List(nil); len(ts) != 1 || ts[0].Project != "p" {
-		t.Fatalf("want one task in p, got %+v", ts)
+	if ts := m.List(nil); len(ts) != 2 || ts[0].Project != "p" || ts[1].Project != "p" {
+		t.Fatalf("want two tasks in p, got %+v", ts)
 	}
 }
 
