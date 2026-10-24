@@ -511,6 +511,11 @@ func (m *model) viewDetail(d *detail) []string {
 		lines = append(lines, "", stDim.Render("space grant or remove · r read its code again"))
 		return window(lines, top+d.sel, m.bodyHeight())
 	case "diff":
+		if d.state != "whole" {
+			for _, l := range wrap(diffNote(d.state), w) {
+				lines = append(lines, stBad.Render(l))
+			}
+		}
 		lines = append(lines, diffView(d.text, w)...)
 	default:
 		lines = append(lines, wrap(d.text, w)...)
@@ -549,38 +554,60 @@ func contains(l []string, s string) bool {
 
 // ---- waiting on you --------------------------------------------------------
 
+// waitIndex finds the selected ask by its id, so a list that shifts under
+// the cursor (an ask answered elsewhere, a new one filed) keeps the selection
+// on the same ask. When that ask is gone the cursor stays at its position.
+func (m *model) waitIndex() int {
+	asks := m.st.Asks
+	for i, a := range asks {
+		if a.ID == m.waitID {
+			m.waitSel = i
+			return i
+		}
+	}
+	if m.waitID != "" {
+		m.optSel = 0 // a different ask now; don't carry the pick over
+	}
+	m.waitSel = max(0, min(m.waitSel, len(asks)-1))
+	m.waitID = ""
+	if m.waitSel < len(asks) {
+		m.waitID = asks[m.waitSel].ID
+	}
+	return m.waitSel
+}
+
+func (m *model) selectWait(i int) {
+	m.waitSel, m.waitID, m.optSel = i, m.st.Asks[i].ID, 0
+}
+
 func (m *model) keyWaiting(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	asks := m.st.Asks
-	if m.waitSel >= len(asks) {
-		m.waitSel = max(0, len(asks)-1)
-	}
+	sel := m.waitIndex()
 	switch k.String() {
 	case "up", "k":
-		if m.waitSel > 0 {
-			m.waitSel--
-			m.optSel = 0
+		if sel > 0 {
+			m.selectWait(sel - 1)
 		}
 	case "down", "j":
-		if m.waitSel < len(asks)-1 {
-			m.waitSel++
-			m.optSel = 0
+		if sel < len(asks)-1 {
+			m.selectWait(sel + 1)
 		}
 	case "left", "h":
 		if m.optSel > 0 {
 			m.optSel--
 		}
 	case "right", "l":
-		if m.waitSel < len(asks) && m.optSel < len(asks[m.waitSel].Options)-1 {
+		if sel < len(asks) && m.optSel < len(asks[sel].Options)-1 {
 			m.optSel++
 		}
 	case "d":
-		if m.waitSel < len(asks) && asks[m.waitSel].Diff != "" {
-			a := asks[m.waitSel]
-			return m, m.push(detail{kind: "diff", id: a.ID, title: "what it changes", text: a.Diff})
+		if sel < len(asks) && asks[sel].Diff != "" {
+			a := asks[sel]
+			return m, m.push(detail{kind: "diff", id: a.ID, title: diffTitle(""), text: a.Diff})
 		}
 	case "enter":
-		if m.waitSel < len(asks) {
-			a := asks[m.waitSel]
+		if sel < len(asks) {
+			a := asks[sel]
 			opt := a.Options[min(m.optSel, len(a.Options)-1)]
 			m.optSel = 0
 			return m, m.post("/api/answer", map[string]string{"id": a.ID, "answer": opt}, "answered: "+opt)
@@ -589,16 +616,36 @@ func (m *model) keyWaiting(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// diffTitle heads the diff view with what of the diff it shows. state is ""
+// while the whole diff is on its way, "whole" once it came, else why it didn't.
+func diffTitle(state string) string {
+	switch state {
+	case "whole":
+		return "the whole diff"
+	case "":
+		return "the diff's first part"
+	}
+	return "only the diff's first part"
+}
+
+// diffNote tops a diff view that isn't the whole diff, saying why.
+func diffNote(state string) string {
+	if state == "" {
+		return "the first part of the diff; fetching the whole…"
+	}
+	return "only the first part of the diff: the whole couldn't be fetched (" + state + ")"
+}
+
 func (m *model) viewWaiting() []string {
 	if len(m.st.Asks) == 0 {
 		return []string{"", "  Nothing is waiting on you."}
 	}
 	w := m.mainW() - 5
 	var lines []string
-	sel := 0
+	sel, at := 0, m.waitIndex()
 	for i, a := range m.st.Asks {
 		gut := "  "
-		if i == m.waitSel {
+		if i == at {
 			gut, sel = stTitle.Render("▌")+" ", len(lines)
 		}
 		from := core.Clip(a.From, 20)
@@ -609,7 +656,7 @@ func (m *model) viewWaiting() []string {
 		top := stTitle.Render(from) + "  " + stDim.Render(a.Kind)
 		ls := []string{pad(clip(top, w-len(age)-1), w-len(age)) + stDim.Render(age)}
 		ls = append(ls, wrap(a.Title, w)...)
-		if i == m.waitSel {
+		if i == at {
 			if a.Detail != "" {
 				for _, l := range wrap(a.Detail, w) {
 					ls = append(ls, stDim.Render(l))
