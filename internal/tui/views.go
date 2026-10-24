@@ -270,7 +270,7 @@ func spark(ms []improve.Measurement) string {
 	return stAccent.Render(b.String())
 }
 
-func (m *model) keyDash(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) keyTree(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	rows := m.dashRows()
 	if m.dashSel >= len(rows) {
 		m.dashSel = max(0, len(rows)-1)
@@ -318,7 +318,7 @@ func (m *model) keyDash(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) viewDash() []string {
+func (m *model) viewTree() []string {
 	rows := m.dashRows()
 	var lines []string
 	for i, r := range rows {
@@ -330,7 +330,7 @@ func (m *model) viewDash() []string {
 			}
 		}
 		line := strings.Repeat("  ", r.depth) + arrow + r.text
-		if i == m.dashSel {
+		if i == m.dashSel && m.focus == 1 {
 			line = stSel.Render(clip(line, m.w))
 		}
 		lines = append(lines, line)
@@ -380,13 +380,7 @@ func (m *model) keyDetailAction(d *detail, key string) (tea.Model, tea.Cmd) {
 		case "s":
 			return m, m.post("/api/run/stop", map[string]string{"id": d.id}, "stopping the agent")
 		case "c":
-			m.section, m.stack, m.chatFocus = secChats, nil, 1
-			for i, r := range m.chatRows() {
-				if r.chatID == "agent:"+d.id {
-					m.chatSel = i
-				}
-			}
-			return m, m.post("/api/chat/agent", map[string]string{"run": d.id}, "")
+			return m, tea.Batch(m.openChat("agent:"+d.id), m.post("/api/chat/agent", map[string]string{"run": d.id}, ""))
 		}
 	case "module":
 		mod, ok := m.module(d.id)
@@ -417,7 +411,7 @@ func (m *model) keyDetailAction(d *detail, key string) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) viewDetail(d *detail) []string {
-	w := m.w - 2
+	w := m.mainW() - 3
 	var lines []string
 	kv := func(k, v string) { lines = append(lines, stDim.Render(fmt.Sprintf("%-10s", k))+" "+v) }
 	switch d.kind {
@@ -591,30 +585,38 @@ func (m *model) viewWaiting() []string {
 	if len(m.st.Asks) == 0 {
 		return []string{"", "  Nothing is waiting on you."}
 	}
+	w := m.mainW() - 5
 	var lines []string
 	sel := 0
 	for i, a := range m.st.Asks {
+		gut := "  "
 		if i == m.waitSel {
-			sel = len(lines)
+			gut, sel = stTitle.Render("▌")+" ", len(lines)
 		}
-		title := fmt.Sprintf("%s  %s", stDim.Render(a.Asked.Local().Format("Mon 15:04")), a.Title)
-		if i == m.waitSel {
-			title = stSel.Render(clip(title, m.w))
+		from := core.Clip(a.From, 20)
+		if a.Project != "" {
+			from = a.Project + " › " + from
 		}
-		lines = append(lines, title)
+		age := ago(a.Asked)
+		top := stTitle.Render(from) + "  " + stDim.Render(a.Kind)
+		ls := []string{pad(clip(top, w-len(age)-1), w-len(age)) + stDim.Render(age)}
+		ls = append(ls, wrap(a.Title, w)...)
 		if i == m.waitSel {
-			lines = append(lines, indent(wrap(a.Detail, m.w-6), "    ")...)
-			var opts []string
-			for j, o := range a.Options {
-				if j == m.optSel {
-					opts = append(opts, stSel.Render(" "+o+" "))
-				} else {
-					opts = append(opts, " "+o+" ")
+			if a.Detail != "" {
+				for _, l := range wrap(a.Detail, w) {
+					ls = append(ls, stDim.Render(l))
 				}
 			}
-			lines = append(lines, "    "+strings.Join(opts, "  "))
+			var opts []string
+			for j, o := range a.Options {
+				if j == m.optSel && m.focus == 1 {
+					o = stSel.Render(o)
+				}
+				opts = append(opts, o)
+			}
+			ls = append(ls, strings.Join(opts, "    ")+"    "+stTitle.Render("←→")+" "+stDim.Render("pick")+"   "+stTitle.Render("enter")+" "+stDim.Render("answer"))
 		}
-		lines = append(lines, "")
+		lines = append(append(lines, indent(ls, gut)...), "")
 	}
 	return window(lines, sel, m.bodyHeight())
 }
@@ -641,24 +643,55 @@ func (m *model) keyModules(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) viewModules() []string {
-	lines := []string{stDim.Render(fmt.Sprintf("%-14s %-12s %-20s %s", "module", "release", "projects", "source")), ""}
+	w := m.mainW() - 5
+	var lines []string
 	for i, mod := range m.st.Modules {
-		line := fmt.Sprintf("%-14s %-12s %-20s %s", mod.Name, core.Clip(mod.Release, 12), core.Clip(strings.Join(mod.Projects, ","), 20), mod.Source)
-		if i == m.modSel {
-			line = stSel.Render(clip(line, m.w))
+		on, name := "[ ]", mod.Name
+		if len(mod.Projects) > 0 {
+			on, name = "[x]", stTitle.Render(mod.Name)
+		}
+		line := pad(pad(on+" "+name, 18)+applies(mod.Projects), 40) + stDim.Render(mod.Description)
+		if i == m.modSel && m.focus == 1 {
+			line = stSel.Render(fit(fmt.Sprintf("%-18s%-22s%s", on+" "+mod.Name, applies(mod.Projects), mod.Description), w))
 		}
 		lines = append(lines, line)
 	}
+	lines = append(lines, "", stDim.Render(strings.Repeat("─", w)), "")
+	if mod, ok := m.module(m.modName()); ok {
+		lines = append(lines, stTitle.Render(mod.Name))
+		lines = append(lines, wrap(mod.Description, min(w, 72))...)
+		lines = append(lines, "")
+		for _, kv := range [][2]string{{"applies to", applies(mod.Projects)}, {"release", mod.Release}, {"source", mod.Source}} {
+			lines = append(lines, stDim.Render(fmt.Sprintf("%-14s", kv[0]))+kv[1])
+		}
+	}
 	lines = append(lines, "", stDim.Render("Install a module by asking the lead (it needs your approval). Modules live in .modules/."))
-	return lines
+	return indent(lines, "  ")
+}
+
+func (m *model) modName() string {
+	if m.modSel < len(m.st.Modules) {
+		return m.st.Modules[m.modSel].Name
+	}
+	return ""
+}
+
+func applies(projects []string) string {
+	switch {
+	case len(projects) == 0:
+		return "off"
+	case contains(projects, "*"):
+		return "all projects"
+	}
+	return strings.Join(projects, ", ")
 }
 
 // ---- settings --------------------------------------------------------------
 
 type setting struct {
-	label, value, key string
-	choices           []string // a pick-list; custom ends it when any value goes
-	action            func() tea.Cmd
+	group, label, value, key string
+	choices                  []string // a pick-list; custom ends it when any value goes
+	action                   func() tea.Cmd
 }
 
 const custom = "custom…"
@@ -715,14 +748,24 @@ func (m *model) settings() []setting {
 	}
 	models := modelChoices(c)
 	s := []setting{
-		{label: "autonomy", value: strconv.Itoa(c.Autonomy) + "  " + autonomyText(c.Autonomy), key: "autonomy"},
-		{label: "harness", value: c.Harness, key: "harness", choices: append(slices.Clone(harness.Names), custom)},
-		{label: "worker model", value: c.Model, key: "model", choices: models},
-		{label: "lead model", value: c.LeadModel, key: "lead_model", choices: models},
-		{label: "reviewer model", value: c.ReviewerModel, key: "reviewer_model", choices: models},
+		{group: "General", label: "autonomy", value: strconv.Itoa(c.Autonomy) + "  " + autonomyText(c.Autonomy), key: "autonomy"},
+		{group: "General", label: "sandbox", value: sandboxVal, key: "sandbox"},
+		{group: "General", label: "WSL distro", value: c.WSLDistro, key: "wsl_distro"},
+		{group: "General", label: "auto-update", value: onOff(c.AutoUpdate), key: "auto_update"},
+		{group: "General", label: "use ANTHROPIC_API_KEY", value: onOff(c.APIKeyOptIn), key: "api_key_opt_in"},
+		{group: "General", label: "release repo", value: c.ReleaseRepo, key: "release_repo"},
+		{group: "General", label: "release", value: pinText(c.ReleasePin), action: func() tea.Cmd {
+			return func() tea.Msg {
+				return flashMsg("`" + core.Cmd + " update --release <tag>` installs and pins a release")
+			}
+		}},
+		{group: "Agents", label: "harness", value: c.Harness, key: "harness", choices: append(slices.Clone(harness.Names), custom)},
+		{group: "Agents", label: "worker model", value: c.Model, key: "model", choices: models},
+		{group: "Agents", label: "lead model", value: c.LeadModel, key: "lead_model", choices: models},
+		{group: "Agents", label: "reviewer model", value: c.ReviewerModel, key: "reviewer_model", choices: models},
 	}
 	for i, t := range c.TribunalModels {
-		s = append(s, setting{label: fmt.Sprintf("tribunal seat %d model", i+1), value: t.Model, key: "tribunal:" + strconv.Itoa(i), choices: models})
+		s = append(s, setting{group: "Agents", label: fmt.Sprintf("tribunal seat %d model", i+1), value: t.Model, key: "tribunal:" + strconv.Itoa(i), choices: models})
 	}
 	for _, pv := range m.st.Projects {
 		p := pv.Name
@@ -730,27 +773,15 @@ func (m *model) settings() []setting {
 		if v == "" {
 			v = "default"
 		}
-		s = append(s, setting{label: "model for " + p, value: v, key: "project:" + p, choices: append([]string{"default"}, models...)})
+		s = append(s, setting{group: "Agents", label: "model for " + p, value: v, key: "project:" + p, choices: append([]string{"default"}, models...)})
 	}
-	s = append(s,
-		setting{label: "review rounds", value: strconv.Itoa(c.ReviewRounds), key: "review_rounds"},
-		setting{label: "sandbox", value: sandboxVal, key: "sandbox"},
-		setting{label: "WSL distro", value: c.WSLDistro, key: "wsl_distro"},
-		setting{label: "auto-update", value: onOff(c.AutoUpdate), key: "auto_update"},
-		setting{label: "use ANTHROPIC_API_KEY", value: onOff(c.APIKeyOptIn), key: "api_key_opt_in"},
-		setting{label: "release repo", value: c.ReleaseRepo, key: "release_repo"},
-		setting{label: "release", value: pinText(c.ReleasePin), action: func() tea.Cmd {
-			return func() tea.Msg {
-				return flashMsg("`" + core.Cmd + " update --release <tag>` installs and pins a release")
-			}
-		}},
-	)
+	s = append(s, setting{group: "Agents", label: "review rounds", value: strconv.Itoa(c.ReviewRounds), key: "review_rounds"})
 	for _, name := range sortedKeys(c.Schedules) {
-		s = append(s, setting{label: "schedule " + name, value: scheduleText(c.Schedules[name]), key: "schedule:" + name})
+		s = append(s, setting{group: "Schedules", label: name, value: scheduleText(c.Schedules[name]), key: "schedule:" + name})
 	}
 	s = append(s,
-		setting{label: "log in: Claude Code", value: "runs Claude Code's own login", action: func() tea.Cmd { return login("claude", "auth", "login") }},
-		setting{label: "log in: GitHub", value: "runs the GitHub CLI's own login", action: func() tea.Cmd { return login("gh", "auth", "login") }},
+		setting{group: "Log in", label: "Claude Code", value: "runs Claude Code's own login", action: func() tea.Cmd { return login("claude", "auth", "login") }},
+		setting{group: "Log in", label: "GitHub", value: "runs the GitHub CLI's own login", action: func() tea.Cmd { return login("gh", "auth", "login") }},
 	)
 	return s
 }
@@ -840,6 +871,8 @@ func (m *model) edit(label, value string) tea.Cmd {
 	m.input.Placeholder = label
 	m.input.SetValue(value)
 	m.input.CursorEnd()
+	m.input.SetHeight(1)
+	m.input.SetWidth(max(10, m.mainW()-36))
 	return m.input.Focus()
 }
 
@@ -919,32 +952,40 @@ func (m *model) saveSetting(v string) tea.Cmd {
 }
 
 func (m *model) viewSettings() []string {
-	var lines []string
-	for i, s := range m.settings() {
-		line := fmt.Sprintf("%-26s %s", s.label, s.value)
-		if i == m.setSel {
-			line = stSel.Render(clip(line, m.w))
+	var lines, banner []string
+	if m.st.ConfigErr != "" { // pinned above the rows so a short window never scrolls it away
+		banner = []string{"  " + stBad.Render(clip("config.json: "+m.st.ConfigErr, m.mainW()-3)), ""}
+	}
+	sel, group := 0, ""
+	for i, st := range m.settings() {
+		if st.group != group {
+			if group != "" {
+				lines = append(lines, "")
+			}
+			group = st.group
+			lines = append(lines, "  "+stDim.Render(group))
 		}
-		lines = append(lines, line)
+		gut, label, value := "  ", st.label, st.value
+		if i == m.setSel {
+			gut, label, sel = stTitle.Render("▌")+" ", stTitle.Render(label), len(lines)
+			if m.editing {
+				value = m.input.View()
+			}
+		}
+		lines = append(lines, gut+"  "+pad(label, 28)+value)
 		if i == m.setSel && m.picking {
-			for j, ch := range s.choices {
-				l := fmt.Sprintf("%-26s %s", "", ch)
+			for j, ch := range st.choices {
 				if j == m.pickSel {
-					l = stSel.Render(clip(fmt.Sprintf("%-24s ▸ %s", "", ch), m.w))
+					ch = stTitle.Render("▸ " + ch)
+				} else {
+					ch = "  " + ch
 				}
-				lines = append(lines, l)
+				lines = append(lines, "    "+pad("", 28)+ch)
 			}
 		}
 	}
-	if m.editing {
-		lines = append(lines, "", m.input.View())
-	}
-	lines = append(lines, "", stDim.Render(fmt.Sprintf("Hive %s · %s · settings in %s", m.st.Version, m.st.Workspace, ".hive/config.json")))
-	if m.st.ConfigErr == "" {
-		return window(lines, m.setSel, m.bodyHeight())
-	}
-	// pinned above the rows so a short window never scrolls it away
-	return append([]string{stBad.Render(clip("config.json: "+m.st.ConfigErr, m.w))}, window(lines, m.setSel, m.bodyHeight()-1)...)
+	lines = append(lines, "", "  "+stDim.Render("Hive "+m.st.Version+" · "+m.st.Workspace))
+	return append(banner, window(lines, sel, m.bodyHeight()-len(banner))...)
 }
 
 func fmtNum(f float64) string { return strconv.FormatFloat(f, 'g', 6, 64) }
