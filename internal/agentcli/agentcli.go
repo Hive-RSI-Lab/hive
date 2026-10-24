@@ -89,6 +89,10 @@ func Main(argv []string) int {
 	return 0
 }
 
+// switches are the yes/no arguments, which may stand bare before another
+// --key; any other key takes the next word as its value, even "--help".
+var switches = map[string]bool{"self": true, "isolated": true, "demo": true, "small": true, "resume": true, "tests_ok": true}
+
 // parseArgs accepts one JSON object, `-` for JSON on stdin, `--file x.json`,
 // or --key value pairs (a value of @path reads that file's text).
 func parseArgs(a []string) (map[string]any, error) {
@@ -113,8 +117,8 @@ func parseArgs(a []string) (map[string]any, error) {
 			out[k] = v
 			continue
 		}
-		if i+1 >= len(a) {
-			out[k] = "true"
+		if i+1 >= len(a) || switches[k] && strings.HasPrefix(a[i+1], "--") {
+			out[k] = true // a bare switch, such as --self
 			continue
 		}
 		v := a[i+1]
@@ -154,6 +158,7 @@ A value of @path reads that file. Common ops:
   brief     --title "..." --done "what done looks like" [--known "..."] [--project p]
                                                  file an ask: it becomes an issue, a worker, a PR
   warden    --want "..." --why "..." --steps "..."   for anything past your reach; the person decides
+  search    --query "words" [--limit n|all]     the knowledge base pieces that match, best first
   remember  --title "..." --text "..." [--tags a,b]   write to the knowledge base
   schedule  --in 2h --text "..."                 a wake-up message to yourself
   status                                         projects, work in flight, scores`

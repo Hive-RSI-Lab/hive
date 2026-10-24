@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +90,7 @@ func commitInCheckout(t *testing.T, c *Core, p Project, id, base, file, content 
 	if err != nil {
 		t.Fatal(err)
 	}
+	os.MkdirAll(filepath.Dir(filepath.Join(dir, file)), 0o755)
 	os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644)
 	mustGit(t, dir, "add", "-A")
 	mustGit(t, dir, "commit", "-q", "-m", "work")
@@ -236,6 +238,29 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// A docs/ path is no free pass: a script there is code and gets a review,
+// while an image there is still a doc.
+func TestClassifyDocsByType(t *testing.T) {
+	for _, tc := range []struct {
+		file  string
+		small bool
+	}{
+		{"docs/build.sh", false},
+		{"docs/gen.py", false},
+		{"docs/Makefile", false},
+		{"docs/img/flow.png", true},
+		{"docs/guide.md", true},
+	} {
+		c, _, p, main := setupProject(t)
+		r, _ := commitInCheckout(t, c, p, "w6", main, tc.file, "x\n")
+		sha, _ := c.Effects.Extract(p, r, main)
+		ch, err := c.Effects.Classify(p, main, sha)
+		if err != nil || ch.Small != tc.small {
+			t.Errorf("%s: small=%v, want %v (%v)", tc.file, ch.Small, tc.small, err)
+		}
+	}
+}
+
 func TestJournalSkipsTornLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j.jsonl")
 	j, err := OpenJournal(path)
@@ -266,6 +291,38 @@ func TestScoreCheck(t *testing.T) {
 	ch := c.Effects.RunCheck(p, main, "score", "cat score.txt")
 	if !ch.OK || ch.Score == nil || *ch.Score != 5 {
 		t.Fatalf("score check: %+v", ch)
+	}
+}
+
+// The file a score's command names is protected, and its content is part of
+// the score's version; a change elsewhere leaves the version alone.
+func TestScoreFileIsProtected(t *testing.T) {
+	c, f := testHive(t)
+	seedRepo(t, f, "me/s", map[string]string{"score.sh": "echo 5\n", "n.txt": "1\n", ".hive/project.json": `{"test":"true","score":{"command":"sh ./score.sh","direction":"higher"}}`})
+	p, _ := c.Projects.Add(Project{Name: "s", Repo: "me/s"})
+	main, _ := c.Effects.Sync(p)
+	sc := *c.Effects.Config(p, main).Score
+	r, _ := commitInCheckout(t, c, p, "w1", main, "score.sh", "echo 9\n")
+	sha, _ := c.Effects.Extract(p, r, main)
+	if ch, _ := c.Effects.Classify(p, main, sha); !slices.Contains(ch.Protected, "score.sh") {
+		t.Fatalf("a change to the score's file must be protected: %+v", ch)
+	}
+	if c.Effects.ScoreVersion(p, main, sc) == c.Effects.ScoreVersion(p, sha, sc) {
+		t.Fatal("changing the score's file kept its version")
+	}
+	r2, _ := commitInCheckout(t, c, p, "w2", main, "n.txt", "2\n")
+	sha2, _ := c.Effects.Extract(p, r2, main)
+	if c.Effects.ScoreVersion(p, main, sc) != c.Effects.ScoreVersion(p, sha2, sc) {
+		t.Fatal("a change outside the score changed its version")
+	}
+}
+
+// The score's paths are cleaned to the form a diff names them in, and a path
+// outside the repository is left out.
+func TestScoreEvaluatorPaths(t *testing.T) {
+	s := Score{Command: `sh "./eval/score.sh"; cat ./../up`, Paths: []string{"./tests/", "/abs", "a/../b"}}
+	if got, want := s.Evaluator(), []string{"tests", "b", "eval/score.sh"}; !slices.Equal(got, want) {
+		t.Fatalf("evaluator %q, want %q", got, want)
 	}
 }
 
@@ -400,6 +457,39 @@ func TestSelfHostCommitsNeedTheirOwnRead(t *testing.T) {
 		}
 		if !c.Effects.Reviewed(self, Change{}, h) {
 			t.Fatalf("%s: a read of its own sha should do", h)
+		}
+	}
+}
+
+// A bench that prints its result first and then per-run lines still scores,
+// and a score at the end of the last line still wins.
+func TestScoreOf(t *testing.T) {
+	for _, c := range []struct {
+		out  string
+		want float64
+	}{
+		{"59.93\nrun 1: 59.34 tokens/s\nrun 5: 60.20 tokens/s\n", 59.93},
+		{"7\nscore: 42\n", 42},
+		{"5\n", 5},
+	} {
+		if v, err := scoreOf(c.out); err != nil || v != c.want {
+			t.Errorf("scoreOf(%q) = %v, %v; want %v", c.out, v, err, c.want)
+		}
+	}
+	for _, out := range []string{
+		"all done\n",
+		"59.93\n60.1\nrun 1: ok\n",
+		"59.93\nN/A\n0\nfailed\n",
+		"59.93\ninf\nrun 1: ok\n",
+		"59.93\n+Inf\nrun 1: ok\n",
+		"59.93\nNaN\nrun 1: ok\n",
+		"59.93\n1e9\nrun 1: ok\n",
+		"score: inf\n",
+		"score: NaN\n",
+		"+Inf\n",
+	} {
+		if v, err := scoreOf(out); err == nil {
+			t.Errorf("scoreOf(%q) = %v; want no score", out, v)
 		}
 	}
 }
