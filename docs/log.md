@@ -59,3 +59,6 @@
 
 ## 2026-10-23 Projects list the files their score reads
 - Decision: the setup brief, the README and the lead's guidance say to list every file the score reads in its `paths`, and a score set or changed with an empty `paths` raises a `score-paths` alert (at the start and when the score's version changes) | Why: the `./` guess misses a script the score calls, a test or a data file, which a candidate could still change (perms' read of the fixed-evaluator change) | Tradeoff: a warning, not a refusal, since only the project knows what its score reads.
+
+## 2026-10-23 What opens under a row stays on screen
+- Decision: a pane scrolls to keep the selected row and what opens under it in view (a setting's pick-list, the selected ask down to its options), the row first when both can't fit; settings' values wrap under their column, and wrapped text breaks words longer than the line | Why: the person's case, a pick-list under the bottom row clipped in a short window (docs/tui-text.md) | Tradeoff: summary rows still clip with `…`, since their detail opens.
