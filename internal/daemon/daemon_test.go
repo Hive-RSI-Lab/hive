@@ -62,6 +62,29 @@ func TestRestartRunsNewBinary(t *testing.T) {
 	}
 }
 
+// Five identical failures are one alert with a count; a different one is a
+// second alert. A repeat with fresh output refreshes the text and moves to the
+// newest place, and the same failure on another project is its own alert.
+func TestAlertsDedup(t *testing.T) {
+	s := &server{}
+	raise := func(project, key, text string) {
+		raw, _ := json.Marshal(map[string]string{"kind": "baseline", "project": project, "key": key, "text": text})
+		s.onEvent(core.Event{Kind: "alert.raised", At: time.Now(), Data: raw})
+	}
+	for i := 0; i < 5; i++ {
+		raise("p", "python3 isn't installed", "python3 isn't installed")
+	}
+	raise("p", "git isn't installed", "git isn't installed")
+	if len(s.alerts) != 2 || s.alerts[0].Count != 5 || s.alerts[1].Count != 1 {
+		t.Fatalf("alerts: %+v", s.alerts)
+	}
+	raise("p", "python3 isn't installed", "python3 isn't installed, run 6")
+	raise("q", "python3 isn't installed", "python3 isn't installed")
+	if len(s.alerts) != 3 || s.alerts[1].Count != 6 || s.alerts[1].Text != "python3 isn't installed, run 6" || s.alerts[2].Count != 1 {
+		t.Fatalf("refresh and per project: %+v", s.alerts)
+	}
+}
+
 // An update from v0.1.2 runs under a systemd unit without KillMode=process,
 // which kills the restart child when the old daemon exits. The child hands
 // the restart to systemd instead, with the unit rewritten for the new binary.
