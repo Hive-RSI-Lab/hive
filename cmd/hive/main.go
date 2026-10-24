@@ -155,11 +155,11 @@ func run(args []string) int {
 			}
 			for _, a := range st.Asks {
 				if a.ID == args[0] {
-					opt := a.Options[0]
-					if cmd == "refuse" {
-						opt = a.Options[len(a.Options)-1]
+					opt, err := pick(cmd, a.Options)
+					if err != nil {
+						return fmt.Errorf("%s: %v; answer it with %s answer %s <%s>", a.ID, err, core.Cmd, a.ID, strings.Join(a.Options, "|"))
 					}
-					fmt.Println(cmd+"d:", a.Title, "->", opt)
+					fmt.Printf("%sd: %s -> %s%s\n", cmd, a.Title, opt, meaning(opt))
 					return c.Do("POST", "/api/answer", map[string]string{"id": a.ID, "answer": opt, "note": strings.Join(args[1:], " ")}, nil)
 				}
 			}
@@ -402,11 +402,47 @@ func cmdStatus() int {
 		if len(st.Asks) > 0 {
 			fmt.Println("\nwaiting on you:")
 			for _, a := range st.Asks {
-				fmt.Printf("  %s  %s  (hive answer %s %s)\n", a.ID, a.Title, a.ID, strings.Join(a.Options, "|"))
+				fmt.Printf("  %s  %s  (%s)\n", a.ID, a.Title, answerHint(a))
 			}
 		}
 		return nil
 	})
+}
+
+// pick is the option approve (the first) or refuse (the last) answers with.
+// An ask with fewer than two options has no yes and no to tell apart, so
+// neither verb guesses.
+func pick(cmd string, options []string) (string, error) {
+	if len(options) < 2 {
+		return "", fmt.Errorf("it has no yes and no to choose between (options: %s)", strings.Join(options, "|"))
+	}
+	if cmd == "refuse" {
+		return options[len(options)-1], nil
+	}
+	return options[0], nil
+}
+
+// meaning says what an answer tells the Hive, where that isn't plain from
+// its word.
+func meaning(opt string) string {
+	switch opt {
+	case "run":
+		return " (the Hive runs exactly the script you were shown)"
+	case "done":
+		return " (you say you did the step yourself; nothing runs)"
+	case "declined", "decline":
+		return " (nothing runs; the agent that asked is told no)"
+	}
+	return ""
+}
+
+// answerHint is how to answer an ask from a shell.
+func answerHint(a core.Ask) string {
+	h := fmt.Sprintf("%s answer %s %s", core.Cmd, a.ID, strings.Join(a.Options, "|"))
+	if len(a.Options) >= 2 {
+		h = fmt.Sprintf("%s approve|refuse %s, or %s", core.Cmd, a.ID, h)
+	}
+	return h
 }
 
 func cmdDoctor(args []string) int {

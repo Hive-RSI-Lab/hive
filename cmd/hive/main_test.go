@@ -32,3 +32,20 @@ func TestReleaseArgRefusesWhatItCannotRead(t *testing.T) {
 		}
 	}
 }
+
+// approve and refuse never guess on an ask with one option (a "told" seen),
+// and say what an answer means where its word doesn't.
+func TestApproveRefusePick(t *testing.T) {
+	if _, err := pick("refuse", []string{"seen"}); err == nil {
+		t.Fatal("refuse answered a one-option ask")
+	}
+	if _, err := pick("approve", nil); err == nil {
+		t.Fatal("approve answered an ask with no options")
+	}
+	if o, _ := pick("approve", []string{"done", "declined"}); o != "done" || meaning(o) == "" {
+		t.Fatalf("approve picked %q, meaning %q", o, meaning(o))
+	}
+	if o, _ := pick("refuse", []string{"run", "declined"}); o != "declined" {
+		t.Fatalf("refuse picked %q", o)
+	}
+}
