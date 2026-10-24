@@ -93,6 +93,8 @@ type model struct {
 	modSel  int
 	setSel  int
 	editing bool
+	picking bool // a setting's pick-list is open
+	pickSel int
 	optSel  int
 	stack   []detail
 	runs    map[string]api.RunDetail
@@ -371,15 +373,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case s == "" || msg.Action != tea.MouseActionPress || m.help || m.showSince || m.notice != nil:
 		case len(m.stack) > 0:
-			if top := &m.stack[len(m.stack)-1]; top.kind == "module" { // the list follows the selection
+			top := &m.stack[len(m.stack)-1]
+			if top.kind == "module" { // the list follows the selection
 				key := "up"
 				if s == "wheeldown" {
 					key = "down"
 				}
 				return m.keyDetailAction(top, key)
-			} else {
-				top.scroll = max(0, top.scroll+map[string]int{"wheelup": -3, "wheeldown": 3}[s])
 			}
+			top.scroll = max(0, top.scroll+map[string]int{"wheelup": -3, "wheeldown": 3}[s])
 		case m.section != secChats:
 		case m.focus == 2:
 			m.thScroll = scroll(m.thScroll, s, m.h-4)
@@ -410,6 +412,10 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.editing {
 		return m.keyInput(k)
+	}
+	if m.picking && (s == "q" || s == "tab" || s == "shift+tab") {
+		m.picking = false // these close an open pick-list first
+		return m, nil
 	}
 	if s == "tab" || s == "shift+tab" {
 		return m, m.cycle(s == "tab")
@@ -781,6 +787,8 @@ func (m *model) keys() []string {
 		return []string{"↑↓", "move", "←→", "pick", "enter", "answer", "tab", "sidebar"}
 	case m.section == secModules:
 		return []string{"enter", "configure", "↑↓", "move", "tab", "sidebar"}
+	case m.section == secSettings && m.picking:
+		return []string{"↑↓", "choose", "enter", "pick", "esc", "cancel"}
 	}
 	return []string{"↑↓", "move", "enter", "change", "tab", "sidebar"}
 }

@@ -810,7 +810,7 @@ func (m *Module) onAnswer(a core.Ask) {
 	m.save(&req)
 	m.act.Unlock()
 	if req.Settles != nil {
-		m.settle(req, false)
+		m.settle(req, req.State == "done")
 		return
 	}
 	text := fmt.Sprintf("the person answered %q: %s", core.Clip(req.Want, 80), a.Answer)

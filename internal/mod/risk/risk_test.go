@@ -969,6 +969,30 @@ func TestModuleInstallRefusesAnIsolatedProject(t *testing.T) {
 	}
 }
 
+// A person's done on a merge they were asked about with no script settles it
+// yes; any other answer, including run with nothing to run, leaves it open.
+func TestPersonDoneSettlesAScriptlessAsk(t *testing.T) {
+	for answer, want := range map[string]string{"done": "merge", "run": "leave open", "declined": "leave open", "maybe": "leave open"} {
+		g := newRig(t, 2)
+		answered := make(chan core.Ask, 1)
+		g.c.Person.Handle("merge", func(a core.Ask) { answered <- a })
+		g.m.Weigh(core.Ask{Kind: "merge", Ref: "t@1", From: g.worker.ID, Title: "Merge?", Detail: "+- a line", Options: []string{"merge", "leave open"}})
+		req := g.m.List()[0]
+		req.Script, req.Digest = "", ""
+		g.m.toPerson(&req, "The warden passed it to you")
+		got, _ := g.m.get(req.ID)
+		g.c.Person.Answer(got.Ask, answer, "")
+		select {
+		case a := <-answered:
+			if a.Answer != want {
+				t.Fatalf("%s: handler got %+v, want %s", answer, a, want)
+			}
+		case <-time.After(4 * time.Second):
+			t.Fatalf("%s: the merge ask was never answered", answer)
+		}
+	}
+}
+
 // Worker-written text from the project's recent requests reaches a warden
 // only inside the quote fence, however it tries to read as the brief.
 func TestWardenBriefFencesRecentRequests(t *testing.T) {
