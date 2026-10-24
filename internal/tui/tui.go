@@ -20,6 +20,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/api"
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/release"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
@@ -95,8 +96,7 @@ type model struct {
 
 	since     []string
 	showSince bool
-	seen      int64 // the journal seq the person has seen up to, for the update notice
-	notice    *api.Updated
+	seen      int64 // the journal seq the person has seen up to, for the update notes
 	help      bool
 }
 
@@ -268,8 +268,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = "the Hive isn't answering: " + msg.err.Error()
 		} else {
 			m.err, m.st, m.loaded = "", msg.st, true
-			if u := msg.st.Updated; u != nil && u.Seq > m.seen {
-				m.notice, m.seen = u, u.Seq
+			if u := msg.st.Updated; u != nil && u.Seq > m.seen { // the notes open as a page to scroll
+				// Cleaned here too: the version that updated wrote them, maybe uncleaned.
+				m.stack, m.seen = append(m.stack, detail{kind: "text", title: "Updated to " + release.Clean(u.To), text: release.Clean(u.Notes)}), u.Seq
 			}
 		}
 	case chatMsg:
@@ -302,7 +303,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		d := map[tea.MouseButton]int{tea.MouseButtonWheelUp: -3, tea.MouseButtonWheelDown: 3}[msg.Button]
 		switch {
-		case d == 0 || msg.Action != tea.MouseActionPress || m.help || m.showSince || m.notice != nil:
+		case d == 0 || msg.Action != tea.MouseActionPress || m.help || m.showSince:
 		case len(m.stack) > 0:
 			if top := &m.stack[len(m.stack)-1]; top.kind == "module" { // the list follows the selection
 				key := "up"
@@ -328,10 +329,6 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.showSince {
 		m.showSince = false
-		return m, nil
-	}
-	if m.notice != nil {
-		m.notice = nil
 		return m, nil
 	}
 	if m.help {
@@ -536,8 +533,6 @@ func (m *model) View() string {
 	case m.showSince:
 		body = append([]string{"", stTitle.Render("  While you were away"), ""}, indent(m.since, "  ")...)
 		body = append(body, "", stDim.Render("  any key to continue"))
-	case m.notice != nil:
-		body = append([]string{"", stTitle.Render("  Updated to "+m.notice.To) + stDim.Render("  any key to dismiss"), ""}, indent(strings.Split(m.notice.Notes, "\n"), "  ")...)
 	case m.help:
 		body = helpLines()
 	case len(m.stack) > 0:

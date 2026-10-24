@@ -310,7 +310,8 @@ func TestSettingsShowsTheConfigLoadError(t *testing.T) {
 }
 
 // After a self-update the daemon's state carries the new version's notes:
-// they show once, any key dismisses them, and a notice already seen stays away.
+// they open once, cleaned of escapes, as a page that wraps and scrolls to the
+// end, esc closes them, and notes already seen stay away.
 func TestUpdateNoticeShowsOnce(t *testing.T) {
 	m := testModel(100, 24)
 	m.seen = 10
@@ -320,16 +321,26 @@ func TestUpdateNoticeShowsOnce(t *testing.T) {
 	if view := m.View(); strings.Contains(view, "old notes") {
 		t.Fatalf("a notice seen before shows again:\n%s", view)
 	}
-	st.Updated = &api.Updated{Seq: 12, To: "v0.1.4", Notes: "v0.1.4: https://github.com/me/hive/releases/tag/v0.1.4\nFixed the thing"}
+	long := "v0.1.4: https://github.com/me/hive/releases/tag/v0.1.4\n" + strings.Repeat("a long line of notes that runs past the edge of the screen ", 5) + "WRAPPED"
+	for i := range 40 {
+		long += fmt.Sprintf("\nline %d", i)
+	}
+	st.Updated = &api.Updated{Seq: 12, To: "v0.1.4", Notes: long + "\r\n\x1b]0;owned\x07THE END"}
 	m.Update(stateMsg{st: st})
 	view := m.View()
 	checkWidth(t, view, 100, 24, "update notice")
-	if !strings.Contains(view, "Updated to v0.1.4") || !strings.Contains(view, "Fixed the thing") || !strings.Contains(view, "releases/tag/v0.1.4") {
-		t.Fatalf("no update notice:\n%s", view)
+	if !strings.Contains(view, "Updated to v0.1.4") || !strings.Contains(view, "WRAPPED") || !strings.Contains(view, "releases/tag/v0.1.4") {
+		t.Fatalf("no update notice, or a line clipped rather than wrapped:\n%s", view)
 	}
-	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	for range 3 {
+		m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	}
+	if view := m.View(); !strings.Contains(view, "]0;ownedTHE END") {
+		t.Fatalf("can't scroll to the end of the notes, or an escape reached the screen:\n%s", view)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m.Update(stateMsg{st: st})
-	if view := m.View(); strings.Contains(view, "Fixed the thing") {
-		t.Fatalf("notice back after dismissing:\n%s", view)
+	if view := m.View(); strings.Contains(view, "Updated to v0.1.4") {
+		t.Fatalf("notice back after closing:\n%s", view)
 	}
 }

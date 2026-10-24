@@ -26,6 +26,10 @@ func TestReleaseArgRefusesWhatItCannotRead(t *testing.T) {
 		{[]string{"--release="}, "", false},
 		{[]string{"v0.1.2"}, "", false},
 		{[]string{"--relase", "v0.1.2"}, "", false},
+		{[]string{"--release=latest"}, "latest", true},
+		{[]string{"--release", "../../evil/v0.1.2"}, "", false},
+		{[]string{"--release=v0.1.2/../../x"}, "", false},
+		{[]string{"--release=v0.1"}, "", false},
 	} {
 		if tag, ok := releaseArg(c.args); tag != c.tag || ok != c.ok {
 			t.Errorf("releaseArg(%q) = %q, %v; want %q, %v", c.args, tag, ok, c.tag, c.ok)

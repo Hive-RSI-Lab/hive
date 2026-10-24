@@ -20,6 +20,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/fakeagent"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/kb"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/release"
 	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 	"github.com/ihsan-sa/hive-standalone-build/internal/setup"
 	"github.com/ihsan-sa/hive-standalone-build/internal/tui"
@@ -186,7 +187,7 @@ func run(args []string) int {
 	case "update":
 		tag, ok := releaseArg(args)
 		if !ok {
-			fmt.Fprintln(os.Stderr, "usage: "+core.Cmd+" update [--release <tag>|latest]")
+			fmt.Fprintln(os.Stderr, "usage: "+core.Cmd+" update [--release vN.N.N|latest]")
 			return 2
 		}
 		return withClient(func(c *api.Client) error {
@@ -284,17 +285,21 @@ func cmdOpen() int {
 }
 
 // releaseArg is the tag `update` was asked for, "" for the newest; ok is
-// false for any other arguments, so a misspelt flag never installs the newest.
+// false for any other arguments, so a misspelt flag never installs the newest,
+// and for a tag that isn't latest or vN.N.N, which never reaches a URL.
 func releaseArg(args []string) (tag string, ok bool) {
 	switch {
 	case len(args) == 0:
 		return "", true
-	case len(args) == 2 && args[0] == "--release" && args[1] != "":
-		return args[1], true
-	case len(args) == 1 && strings.HasPrefix(args[0], "--release=") && args[0] != "--release=":
-		return strings.TrimPrefix(args[0], "--release="), true
+	case len(args) == 2 && args[0] == "--release":
+		tag = args[1]
+	case len(args) == 1 && strings.HasPrefix(args[0], "--release="):
+		tag = strings.TrimPrefix(args[0], "--release=")
 	}
-	return "", false
+	if tag != "latest" && !release.ValidTag(tag) {
+		return "", false
+	}
+	return tag, true
 }
 
 func cmdAsk(args []string) int {

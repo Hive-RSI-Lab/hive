@@ -158,6 +158,72 @@ func TestUpdateWithoutNotesLinksThem(t *testing.T) {
 	}
 }
 
+// Notes are outside text: their escape and control characters never reach
+// the terminal, and a CRLF body prints clean.
+func TestNotesPrintAsPlainText(t *testing.T) {
+	serve(t, "v9.9.9", build("new"), false)
+	releases = `[{"tag_name": "v9.9.9", "body": "\u001b]0;owned\u0007\u001b[31mred\u009b2J\r\nnext\tline\r\n", "html_url": "https://example.com/me/hive/releases/tag/v9.9.9"}]`
+	m, _ := releaseAt(t, "v0.1.2", "me/hive")
+	msg, err := m.Update("")
+	if err != nil || !strings.Contains(msg, "]0;owned[31mred2J\nnext\tline") || strings.ContainsAny(msg, "\x1b\x07\u009b\r") {
+		t.Fatalf("update: %q, %v", msg, err)
+	}
+}
+
+// Notes past the read limit stop there and link the rest.
+func TestLongNotesEndWithALink(t *testing.T) {
+	serve(t, "v9.9.9", build("new"), false)
+	releases = `[{"tag_name": "v9.9.9", "body": "Faster merges.", "html_url": "https://example.com/me/hive/releases/tag/v9.9.9"},
+ {"tag_name": "v9.9.8", "body": "` + strings.Repeat("x", 4000) + `", "html_url": "https://example.com/me/hive/releases/tag/v9.9.8"}]`
+	limit := maxNotes
+	t.Cleanup(func() { maxNotes = limit })
+	maxNotes = 1000
+	m, _ := releaseAt(t, "v0.1.2", "me/hive")
+	msg, err := m.Update("")
+	if err != nil || !strings.Contains(msg, "Faster merges.") || strings.Contains(msg, "xxx") || !strings.HasSuffix(msg, "…\n"+NotesLink("me/hive")) {
+		t.Fatalf("update: %q, %v", msg, err)
+	}
+}
+
+// A prerelease, which updates never install, is left out of the notes.
+func TestNotesSkipPrereleases(t *testing.T) {
+	serve(t, "v9.9.8", build("new"), false)
+	releases = `[{"tag_name": "v9.9.9", "body": "Beta only.", "prerelease": true, "html_url": "https://example.com/me/hive/releases/tag/v9.9.9"},` + releaseList[1:]
+	m, _ := releaseAt(t, "v0.1.2", "me/hive")
+	msg, err := m.Update("")
+	if err != nil || strings.Contains(msg, "Beta only.") || !strings.Contains(msg, "Fixed the lead's chat.") {
+		t.Fatalf("update: %q, %v", msg, err)
+	}
+}
+
+// A tag that isn't vN.N.N is refused before it reaches a URL or path.
+func TestUpdateRefusesAnOddTag(t *testing.T) {
+	serveAll(t, "v0.1.3", map[string]map[string]string{"v0.1.3": build("new")}, false)
+	m, exe := releaseAt(t, "v0.1.2", "me/hive")
+	for _, tag := range []string{"../../old/name/releases/download/v0.1.3", "v0.1.3/../v0.1.3", "v0.1"} {
+		_, err := m.Update(tag)
+		if raw, _ := os.ReadFile(exe); err == nil || !strings.Contains(err.Error(), "isn't a release tag") || string(raw) != "old" {
+			t.Fatalf("%s: %v, binary %q", tag, err, raw)
+		}
+	}
+}
+
+// The pin is saved before the binary is swapped, so a config that can't be
+// saved leaves the binary as it was and says so.
+func TestUnsavedPinInstallsNothing(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory the test can't write")
+	}
+	serveAll(t, "v0.1.3", map[string]map[string]string{"v0.1.1": build("older")}, false)
+	m, exe := releaseAt(t, "v0.1.2", "me/hive")
+	os.Chmod(m.C.WS.Hive(), 0o500)
+	t.Cleanup(func() { os.Chmod(m.C.WS.Hive(), 0o755) })
+	_, err := m.Update("v0.1.1")
+	if raw, _ := os.ReadFile(exe); err == nil || !strings.Contains(err.Error(), "wasn't installed") || string(raw) != "old" {
+		t.Fatalf("unsaved pin: %v, binary %q", err, raw)
+	}
+}
+
 // A download whose checksum doesn't match is never installed.
 func TestChecksumMismatchKeepsBinary(t *testing.T) {
 	serve(t, "v9.9.9", build("new"), true)

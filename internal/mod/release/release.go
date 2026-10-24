@@ -14,11 +14,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/modules"
@@ -87,37 +89,67 @@ func download(repo, tag, name, dir string) error {
 	return err
 }
 
+// maxNotes bounds how much of the releases list is read for notes.
+var maxNotes int64 = 1 << 20
+
 // Notes are the release notes of each version after from up to to, newest
-// first, each with its page; when they can't be fetched, the releases page.
+// first, each with its page, cleaned of control characters; prereleases,
+// which updates never install, are left out. Notes past maxNotes end with a
+// link to the rest, and notes that can't be fetched are only that link.
 func Notes(repo, from, to string) string {
-	var rels []struct {
-		Tag  string `json:"tag_name"`
-		Body string
-		URL  string `json:"html_url"`
-	}
+	var b strings.Builder
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(API + "/repos/" + repo + "/releases?per_page=100")
 	if err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			err = errors.New(resp.Status)
-		} else {
-			err = json.NewDecoder(resp.Body).Decode(&rels)
 		}
 	}
-	var b strings.Builder
-	for _, r := range rels {
-		if modules.Newer(from, r.Tag) && !modules.Newer(to, r.Tag) {
-			fmt.Fprintf(&b, "%s: %s\n%s\n\n", r.Tag, r.URL, strings.TrimSpace(r.Body))
+	if err == nil {
+		dec := json.NewDecoder(io.LimitReader(resp.Body, maxNotes))
+		_, err = dec.Token() // the list's [
+		for err == nil && dec.More() {
+			var r struct {
+				Tag        string `json:"tag_name"`
+				Body       string
+				URL        string `json:"html_url"`
+				Prerelease bool
+			}
+			if err = dec.Decode(&r); err == nil && !r.Prerelease && modules.Newer(from, r.Tag) && !modules.Newer(to, r.Tag) {
+				fmt.Fprintf(&b, "%s: %s\n%s\n\n", Clean(r.Tag), Clean(r.URL), strings.TrimSpace(Clean(r.Body)))
+			}
+		}
+		if err == nil {
+			_, err = dec.Token() // the list's ], missing when cut at the limit
 		}
 	}
-	if err != nil || b.Len() == 0 {
+	if err != nil && b.Len() > 0 {
+		b.WriteString("…\n" + NotesLink(repo))
+	}
+	if b.Len() == 0 {
 		return NotesLink(repo)
 	}
 	return strings.TrimSpace(b.String())
 }
 
+// Clean drops the control characters of outside text, terminal escapes among
+// them, so it prints as plain text; newlines and tabs stay.
+func Clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, s)
+}
+
 // NotesLink points at the releases page.
 func NotesLink(repo string) string { return "What changed: " + Site + "/" + repo + "/releases" }
+
+// ValidTag is whether tag is a release tag, vN.N.N, and so safe in a URL or path.
+func ValidTag(tag string) bool { return tagPattern.MatchString(tag) }
+
+var tagPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
 // AssetName is the release asset for an OS and architecture.
 func AssetName(goos, goarch string) string {
@@ -129,7 +161,8 @@ func AssetName(goos, goarch string) string {
 }
 
 // Update installs a release over this binary: tag, which pins the Hive there
-// and may be older, or with "" or "latest" the newest, which clears any pin.
+// and may be older, or with "" or "latest" the newest, which clears any pin;
+// a tag that isn't vN.N.N is refused.
 // Live runs are separate processes and the daemon reattaches to them after it
 // restarts, so live work carries across.
 func (m *Module) Update(tag string) (string, error) {
@@ -143,6 +176,9 @@ func (m *Module) Update(tag string) (string, error) {
 		if tag, err = latest(cfg.ReleaseRepo); err != nil {
 			return "", err
 		}
+	}
+	if !ValidTag(tag) {
+		return "", fmt.Errorf("%q isn't a release tag like v1.2.3", tag)
 	}
 	if !pin && !modules.Newer(core.Version, tag) || pin && tag == core.Version {
 		msg := "already on " + core.Version
@@ -172,9 +208,7 @@ func (m *Module) Update(tag string) (string, error) {
 			return "", fmt.Errorf("release %s has no %s; not installing", tag, name)
 		}
 	}
-	exe := executable()
-	dir := filepath.Dir(exe)
-	for i, name := range names {
+	for _, name := range names {
 		if err := download(cfg.ReleaseRepo, tag, name, tmp); err != nil {
 			return "", err
 		}
@@ -185,16 +219,22 @@ func (m *Module) Update(tag string) (string, error) {
 		if sums[name] != got {
 			return "", fmt.Errorf("%s: checksum mismatch; not installing", name)
 		}
+	}
+	// The pin is saved first: a pin lost after the swap would let auto-update
+	// bring the old version back.
+	if err := m.pin(cfg, tag, pin); err != nil {
+		return "", fmt.Errorf("couldn't save the config, so %s wasn't installed: %w", tag, err)
+	}
+	exe := executable()
+	for i, name := range names {
 		target := exe
 		if i > 0 {
-			target = filepath.Join(dir, name)
+			target = filepath.Join(filepath.Dir(exe), name)
 		}
 		if err := replace(filepath.Join(tmp, name), target); err != nil {
+			m.C.WS.SaveConfig(cfg) // back to the pin of the binary still in place
 			return "", err
 		}
-	}
-	if err := m.pin(cfg, tag, pin); err != nil {
-		return "", err
 	}
 	notes := Notes(cfg.ReleaseRepo, core.Version, tag)
 	m.C.J.MustAppend("hive.updated", map[string]string{"from": core.Version, "to": tag, "notes": notes})
