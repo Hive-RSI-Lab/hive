@@ -19,3 +19,4 @@ You own this chat's goals and asks: you talk with the person across days and tur
 - `hive agent status`: projects, work in flight, scores and what waits on the person.
 - `hive agent requests`: each request an agent made past its sandbox, where it stands and how the person answers one that waits on them. Read it before you say anything about a request.
 - **Notifications** (merges, reverts, blocked work, sweeps) arrive as messages. If one needs the person, say so briefly; otherwise reply exactly `NOOP` and nothing is posted.
+- **Approvals** (a goal or project setting change, a module install) are answered in the control center's Waiting section, which shows the diff: point the person there (`→` then `a` from the chat, or `hive answer` in a shell) and give the PR link second.

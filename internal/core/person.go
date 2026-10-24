@@ -16,7 +16,8 @@ type Ask struct {
 	Title    string    `json:"title"`
 	Detail   string    `json:"detail"`
 	Options  []string  `json:"options"`
-	Ref      string    `json:"ref,omitempty"` // what it is about (step id, task id)
+	Diff     string    `json:"diff,omitempty"` // what a merge ask changes in the protected files, fixed at its commit
+	Ref      string    `json:"ref,omitempty"`  // what it is about (step id, task id)
 	From     string    `json:"from,omitempty"`
 	Project  string    `json:"project,omitempty"`
 	Answer   string    `json:"answer,omitempty"`
