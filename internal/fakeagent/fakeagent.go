@@ -660,7 +660,7 @@ func review(all string) map[string]any {
 	if strings.Contains(all, "FAKE:reviewfix") && strings.Contains(all, "Review round 1") {
 		return map[string]any{"verdict": "fix", "summary": "needs one more pass", "findings": []map[string]any{{"file": "work", "issue": "FAKE finding"}}, "token": tok}
 	}
-	if strings.Contains(all, "FAKE:reviewadvice") && !strings.Contains(all, "FAKE advice") {
+	if strings.Contains(all, "FAKE:reviewadvice") {
 		return map[string]any{"verdict": "land", "summary": "looks right", "advice": []string{"FAKE advice: name the helper for what it does"}, "token": tok}
 	}
 	return map[string]any{"verdict": "land", "summary": "looks right", "findings": []any{}, "token": tok}

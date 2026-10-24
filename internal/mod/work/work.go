@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -70,7 +71,9 @@ type Task struct {
 	RevertOf  string            `json:"revert_of,omitempty"`  // task id
 	RevertSHA string            `json:"revert_sha,omitempty"` // the merge being reverted
 	Lesson    string            `json:"lesson,omitempty"`
-	Inputs    map[string]string `json:"inputs,omitempty"` // files its worker reads in $HIVE_RUN, kept off the issue
+	Advice    []string          `json:"advice,omitempty"`       // a land's reviewer advice, filed as one follow-up once merged
+	FollowUp  string            `json:"follow_up_of,omitempty"` // the task whose review advice this follows up
+	Inputs    map[string]string `json:"inputs,omitempty"`       // files its worker reads in $HIVE_RUN, kept off the issue
 	Failures  int               `json:"failures"`
 	CloseFail int               `json:"close_fail,omitempty"` // failed tries to close the issue
 	Attempt   int               `json:"attempt"`              // fresh workers handed this task
@@ -211,6 +214,9 @@ type Brief struct {
 	Chat    string            `json:"chat"`
 	Thread  string            `json:"thread"`
 	Inputs  map[string]string `json:"-"`
+	// FollowUp is the task whose review advice this brief follows up; only the
+	// Hive sets it.
+	FollowUp string `json:"-"`
 }
 
 // File creates a task from a brief.
@@ -229,7 +235,7 @@ func (m *Module) File(b Brief) (Task, error) {
 		return Task{}, fmt.Errorf("no project %q", b.Project)
 	}
 	t := &Task{ID: core.NewID(), Project: b.Project, Title: strings.TrimSpace(b.Title), Done: b.Done, Known: b.Known,
-		From: b.From, Chat: b.Chat, Thread: b.Thread, Kind: "work", Stage: StageNew, Inputs: b.Inputs, Created: time.Now().UTC()}
+		From: b.From, Chat: b.Chat, Thread: b.Thread, FollowUp: b.FollowUp, Kind: "work", Stage: StageNew, Inputs: b.Inputs, Created: time.Now().UTC()}
 	m.save(t, "filed by "+b.From)
 	return *t, nil
 }
@@ -475,6 +481,9 @@ func (m *Module) step(t *Task) error {
 	case StageMerging:
 		return m.merge(t, p)
 	case StageMerged:
+		if err := m.followUp(t, p); err != nil {
+			return err
+		}
 		t.Stage = StageDone
 		m.save(t, "done")
 	case StageDone:
@@ -916,19 +925,11 @@ func (m *Module) review(t *Task, p core.Project) error {
 		if t.Kind == "revert" {
 			account = fmt.Sprintf("The Hive made this revert itself; no worker wrote it. It reverts the merge %s because: %s\n\nIt also records that lesson in `.hive/lessons.md`. Check it undoes that merge and nothing else.", core.Short(t.RevertSHA), t.Lesson)
 		}
-		// The project's standing rules come from main, so a change can't move
-		// the bar it is judged against. Lessons are already in the worker's brief.
-		var rules strings.Builder
-		for _, f := range []string{"docs/REVIEW.md", ".hive/goals.md"} {
-			if s := strings.TrimSpace(m.C.Effects.ReadFile(p, main, f)); s != "" {
-				fmt.Fprintf(&rules, "\n\n## `%s` on main\n\n%s", f, s)
-			}
-		}
 		brief := fmt.Sprintf("Review round %d of task %s: %q.\n\nThe brief, the exact diff and the test run are in $HIVE_RUN (brief.md, diff.patch, tests.txt). Give your verdict.", t.Round+1, t.ID, t.Label())
 		spec := m.Agents.Spec(id, "reviewer", p.Name, dir, brief)
 		spec.ReadOnly, spec.Schema, spec.Task = true, VerdictSchema, t.ID
 		spec.Inputs = map[string]string{"sha": t.SHA, "diff.patch": ch.Diff, "tests.txt": c.Output,
-			"brief.md": "Review token: " + reviewToken(id) + "\n\n" + account + rules.String()}
+			"brief.md": "Review token: " + reviewToken(id) + "\n\n" + account + m.reviewRules(p, main)}
 		if _, err := m.C.Runs.Start(spec); err != nil {
 			return err
 		}
@@ -969,21 +970,57 @@ func (m *Module) review(t *Task, p core.Project) error {
 	}
 	m.C.Effects.Forge.Comment(p.Repo, t.PR.Number, fb.String())
 	if v.Verdict == "land" {
-		// Advice with a land doesn't hold the merge; it becomes one follow-up brief.
-		if len(v.Advice) > 0 && len(m.List(func(x Task) bool { return x.From == r.ID })) == 0 {
-			if _, err := m.File(Brief{Project: p.Name, From: r.ID, Chat: t.Chat, Thread: t.Thread,
-				Title: "Follow up the review of " + core.Clip(t.Label(), 100),
-				Done:  "Each item below is done, or judged not worth doing with the reason in your account.",
-				Known: "The reviewer landed " + t.PR.URL + " with this advice:\n\n- " + strings.Join(v.Advice, "\n- ")}); err != nil {
-				return err
-			}
-		}
+		// Advice with a land doesn't hold the merge; it is kept, from every read,
+		// and filed as one follow-up once the change merges. A follow-up's own
+		// advice stays on its pull request, so the chain stops there.
+		keepAdvice(t, v.Advice)
 		// Back through test(), which merges or asks a second, separate reader for a high class.
 		t.Stage = StageTesting
 		m.save(t, "reviewer: land")
 		return nil
 	}
 	return m.sendBack(t, p, "The reviewer asked for fixes on "+core.Short(t.SHA)+":\n\n"+fb.String())
+}
+
+// keepAdvice adds a land's advice to the task once per item, unless the task
+// is itself a follow-up.
+func keepAdvice(t *Task, advice []string) {
+	if t.FollowUp != "" {
+		return
+	}
+	for _, a := range advice {
+		if a = strings.TrimSpace(a); a != "" && !slices.Contains(t.Advice, a) {
+			t.Advice = append(t.Advice, a)
+		}
+	}
+}
+
+// reviewRules are the project's standing rules, read from main so a change
+// can't move the bar it is judged against. Lessons are among them: a revert
+// the Hive made has no worker brief quoting them, and one may have landed
+// since the worker started.
+func (m *Module) reviewRules(p core.Project, main string) string {
+	var b strings.Builder
+	for _, f := range []string{"docs/REVIEW.md", ".hive/goals.md", ".hive/lessons.md"} {
+		if s := strings.TrimSpace(m.C.Effects.ReadFile(p, main, f)); s != "" {
+			fmt.Fprintf(&b, "\n\n## `%s` on main\n\n%s", f, s)
+		}
+	}
+	return b.String()
+}
+
+// followUp files a merged task's review advice as one follow-up brief. The
+// task is saved merged before this runs and done after, so a restart in
+// between finds the brief already filed and doesn't file it again.
+func (m *Module) followUp(t *Task, p core.Project) error {
+	if len(t.Advice) == 0 || len(m.List(func(x Task) bool { return x.FollowUp == t.ID })) > 0 {
+		return nil
+	}
+	_, err := m.File(Brief{Project: p.Name, From: t.Reviewer, Chat: t.Chat, Thread: t.Thread, FollowUp: t.ID,
+		Title: "Follow up the review of " + core.Clip(t.Label(), 100),
+		Done:  "Each item below is done, or judged not worth doing with the reason in your account.",
+		Known: "The reviewer landed " + t.PR.URL + ", now merged, with this advice:\n\n- " + strings.Join(t.Advice, "\n- ")})
+	return err
 }
 
 // sendBack returns findings to the same worker in the same checkout, a
@@ -1210,9 +1247,9 @@ func (m *Module) Retry(id string) error {
 
 // doneFor is the done line a brief carries. On a scored project an agent's own
 // bar would cap the work, so the ask stands as done; the Hive's own setup brief
-// keeps its line.
+// and a review follow-up keep their line.
 func doneFor(t *Task, scored bool) string {
-	if scored && t.From != "hive" {
+	if scored && t.From != "hive" && t.FollowUp == "" {
 		return "What the ask says, as far as you can take it."
 	}
 	return orNone(t.Done)
