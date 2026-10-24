@@ -8,7 +8,9 @@ import (
 	"testing"
 )
 
-func res(probe string, pass bool, ms ...Metric) Result { return Result{Probe: probe, Pass: pass, Metrics: ms} }
+func res(probe string, pass bool, ms ...Metric) Result {
+	return Result{Probe: probe, Pass: pass, Metrics: ms}
+}
 
 func TestDecide(t *testing.T) {
 	score := func(v float64) Metric { return Metric{"score", v, true} }

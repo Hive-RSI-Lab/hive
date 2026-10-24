@@ -87,6 +87,14 @@ func Run(cfg Config) (rep Report, err error) {
 	if len(cfg.Probes) == 0 {
 		cfg.Probes = DefaultProbes
 	}
+	// Children get the Go caches by path, since their HOME is empty.
+	for _, k := range []string{"GOCACHE", "GOMODCACHE"} {
+		if os.Getenv(k) == "" {
+			if out, err := exec.Command("go", "env", k).Output(); err == nil {
+				os.Setenv(k, strings.TrimSpace(string(out)))
+			}
+		}
+	}
 	rep = Report{ID: fmt.Sprintf("gate-%d", t0.Unix()), Head: cfg.Head, Base: cfg.Base, Sandbox: cfg.Sandbox, Started: t0.UTC()}
 	if cfg.Out == "" {
 		cfg.Out = filepath.Join(os.TempDir(), rep.ID)
