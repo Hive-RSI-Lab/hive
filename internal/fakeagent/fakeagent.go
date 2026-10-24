@@ -551,17 +551,16 @@ func peek(warden string) string {
 		os.Remove(f.Name())
 	}
 	secrets := 0
-	if raw, _ := os.ReadFile(filepath.Join(st, "daemon.json")); strings.Contains(string(raw), "token") {
-		secrets++
-	}
-	filepath.WalkDir(filepath.Join(st, "logins"), func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			if _, err := os.ReadFile(p); err == nil {
-				secrets++
+	for _, dir := range []string{"logins", "modules", "private"} {
+		filepath.WalkDir(filepath.Join(st, dir), func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				if _, err := os.ReadFile(p); err == nil {
+					secrets++
+				}
 			}
-		}
-		return nil
-	})
+			return nil
+		})
+	}
 	return strings.Join(out, ", ") + fmt.Sprintf(", create=%t, secrets=%d", err == nil, secrets)
 }
 
