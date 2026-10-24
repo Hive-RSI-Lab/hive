@@ -69,10 +69,13 @@ func (m *Module) StepBacks(project string) []StepBack {
 
 func (m *Module) saveStepBack(s StepBack) { m.C.J.MustAppend("stepback.saved", s) }
 
-// start is the project's first kept measure: the seed every setup starts from.
-func (m *Module) start(project string) (Measurement, bool) {
-	for _, x := range m.Scores(project) {
-		if x.Kept && x.Score != nil {
+// start is the project's first kept measure under the score that gave its
+// best: the seed every setup starts from.
+func (m *Module) start(p core.Project) (Measurement, bool) {
+	k, _ := m.kept(p.Name)
+	v := m.versionOf(p, k)
+	for _, x := range m.Scores(p.Name) {
+		if x.Kept && x.Score != nil && m.versionOf(p, x) == v {
 			return x, true
 		}
 	}
@@ -147,15 +150,15 @@ func (m *Module) StartStepBack(p core.Project, why string) error {
 	for _, r := range m.hiveRuns(p.Name, s.Since) {
 		s.Budget += r.Cost
 	}
-	st, ok := m.start(p.Name)
+	st, ok := m.start(p)
 	if !ok {
 		return m.fail(s, "it has no score to beat")
 	}
 	s.From = st.SHA
 	if s.Budget <= 0 {
 		s.Status, s.Note, s.Ended = "none", "the Hive has spent nothing on it since the last step-back, so a setup has nothing to spend", time.Now().UTC()
-		m.saveStepBack(s)
 		m.alert(p.Name, "the step-back on "+p.Name+" did not run: "+s.Note)
+		m.saveStepBack(s)
 		return nil
 	}
 	main, err := m.C.Effects.Sync(p)
@@ -339,6 +342,10 @@ func (m *Module) score(s StepBack, r core.Run) {
 		m.fail(s, "the experiment's score can't count: "+err.Error())
 		return
 	}
+	if k, _ := m.kept(p.Name); m.versionOf(p, k) != m.C.Effects.ScoreVersion(p, sha, *cfg.Score) {
+		m.fail(s, "the score changed since the experiment's start, so its number can't be compared with the Hive's best")
+		return
+	}
 	c := m.C.Effects.RunCheck(p, sha, "score", cfg.Score.Command)
 	if !c.OK || c.Score == nil {
 		m.fail(s, "the experiment's copy did not score: "+core.Clip(c.Output, 300))
@@ -429,7 +436,7 @@ func (m *Module) alert(project, text string) {
 // fail ends a step-back and says why in its project's step-back alert.
 func (m *Module) fail(s StepBack, why string) error {
 	s.Status, s.Note, s.Ended = "failed", why, time.Now().UTC()
+	m.alert(s.Project, "the step-back on "+s.Project+" could not finish: "+why) // first, so an ended step-back always shows its alert
 	m.saveStepBack(s)
-	m.alert(s.Project, "the step-back on "+s.Project+" could not finish: "+why)
 	return errors.New(why)
 }

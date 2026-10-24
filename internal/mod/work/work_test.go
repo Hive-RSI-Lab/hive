@@ -6,17 +6,44 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/agents"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/modules"
 )
 
-// flakyForge fails the first `fail` closes, the way GitHub does on a 503.
+// flakyForge fails the first `fail` closes, the way GitHub does on a 503, and
+// keeps the body of each pull request it opens.
 type flakyForge struct {
 	*core.Local
 	fail   int
+	down   bool
+	users  int
+	refuse bool
+	hold   chan struct{} // the first User call waits for it to close
 	closed []int
+	bodies []string
+}
+
+func (f *flakyForge) CreatePR(repo, head, base, title, body string) (core.PR, error) {
+	f.bodies = append(f.bodies, body)
+	return f.Local.CreatePR(repo, head, base, title, body)
+}
+
+func (f *flakyForge) User() (string, error) {
+	f.users++
+	if f.hold != nil && f.users == 1 {
+		<-f.hold
+	}
+	if f.down {
+		return "", errors.New("dial tcp: lookup api.github.com: no such host")
+	}
+	if f.refuse {
+		return "", errors.New("HTTP 403: Resource not accessible by integration")
+	}
+	return f.Local.User()
 }
 
 func (f *flakyForge) CloseIssue(repo string, number int) error {
@@ -116,6 +143,148 @@ func TestCloseIssueGivesUp(t *testing.T) {
 	}
 }
 
+// While GitHub is unreachable a task's gaps grow to a ceiling and it's never
+// stopped; the first step that gets through wakes every waiting task at once.
+func TestOutageBacksOffAndWakes(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	var gaps []time.Duration
+	for range 20 {
+		m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+		gaps = append(gaps, time.Until(task.Retry).Round(time.Second))
+	}
+	why := "can't reach GitHub: no internet connection"
+	if task.Stage != StageLanding || task.Failures != 0 || m.Offline() != why || !logged(task, why+"; retrying") {
+		t.Fatalf("stage %q, failures %d, offline %q, log %v", task.Stage, task.Failures, m.Offline(), task.Log)
+	}
+	if gaps[0] != 30*time.Second || gaps[1] != time.Minute || gaps[4] != 8*time.Minute || gaps[5] != 10*time.Minute || gaps[19] != 10*time.Minute {
+		t.Fatalf("gaps %v", gaps)
+	}
+	if m.due(*task) {
+		t.Fatal("due inside its gap while offline")
+	}
+	forge.down = true
+	m.settle(&Task{ID: "t2"}, nil) // a step that never touched GitHub
+	if m.Offline() != why || m.due(*task) {
+		t.Fatalf("offline %q, due %v after a step that proves nothing", m.Offline(), m.due(*task))
+	}
+	forge.down = false
+	passGap(m)                     // the shared check's gap is over
+	m.settle(&Task{ID: "t2"}, nil) // and once GitHub answers
+	if m.Offline() != "" || !m.due(*task) {
+		t.Fatalf("offline %q, due %v once back", m.Offline(), m.due(*task))
+	}
+	// A real error after the outage counts from zero and keeps its own gap.
+	m.settle(task, errors.New("HTTP 422"))
+	if task.Failures != 1 || task.Stage != StageLanding || m.due(*task) {
+		t.Fatalf("failures %d, stage %q, due %v", task.Failures, task.Stage, m.due(*task))
+	}
+}
+
+// Idle tasks during an outage share one GitHub check per backoff step.
+func TestOutageChecksOncePerStep(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	forge.down = true
+	for step, gap := range []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute} {
+		for range 50 {
+			m.settle(&Task{ID: "idle"}, nil)
+		}
+		if forge.users != step+1 || m.Offline() == "" {
+			t.Fatalf("step %d: %d checks, offline %q", step, forge.users, m.Offline())
+		}
+		if got := nextCheck(m); got != gap {
+			t.Fatalf("step %d: next check in %v, want %v", step, got, gap)
+		}
+		passGap(m)
+	}
+}
+
+// A second outage right after a recovery gets its first check at once.
+func TestOutageAfterRecoveryChecksAtOnce(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	m.settle(&Task{ID: "idle"}, nil) // GitHub answers
+	if m.Offline() != "" {
+		t.Fatalf("offline %q after recovery", m.Offline())
+	}
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	forge.down = true
+	m.settle(&Task{ID: "idle"}, nil)
+	if forge.users != 2 {
+		t.Fatalf("%d checks, want the new outage checked at once", forge.users)
+	}
+}
+
+// One check is out at a time: idle tasks don't start another while it hangs
+// past its gap, and when it answers every waiting task wakes.
+func TestOutageOneCheckAtATime(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	release := holdCheck(m, forge)
+	passGap(m)
+	for range 50 {
+		m.settle(&Task{ID: "idle"}, nil)
+	}
+	release()
+	if forge.users != 1 || m.Offline() != "" || !m.due(*task) {
+		t.Fatalf("%d checks, offline %q, due %v", forge.users, m.Offline(), m.due(*task))
+	}
+}
+
+// A step that fails while a check is out isn't wiped when the check answers.
+func TestOutageDuringCheckSticks(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	release := holdCheck(m, forge)
+	m.settle(task, errors.New("dial tcp: i/o timeout"))
+	release()
+	if why := "can't reach GitHub: the connection failed"; m.Offline() != why || m.due(*task) {
+		t.Fatalf("offline %q, due %v", m.Offline(), m.due(*task))
+	}
+}
+
+// A check refused for a reason other than the network says GitHub is back.
+func TestOutageCheckOtherErrorClears(t *testing.T) {
+	m, forge, task, _ := noCommitRig(t, 0)
+	m.settle(task, errors.New("dial tcp: lookup api.github.com: no such host"))
+	forge.refuse = true
+	m.settle(&Task{ID: "idle"}, nil)
+	if m.Offline() != "" || !m.due(*task) {
+		t.Fatalf("offline %q, due %v", m.Offline(), m.due(*task))
+	}
+}
+
+// holdCheck starts an idle task's GitHub check and leaves it hanging; release
+// lets it answer and waits for that settle to return.
+func holdCheck(m *Module, forge *flakyForge) (release func()) {
+	forge.hold = make(chan struct{})
+	done := make(chan struct{})
+	go func() { m.settle(&Task{ID: "slow"}, nil); close(done) }()
+	for {
+		m.mu.Lock()
+		out := m.probing
+		m.mu.Unlock()
+		if out {
+			return func() { close(forge.hold); <-done }
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// passGap ends the shared check's gap.
+func passGap(m *Module) {
+	m.mu.Lock()
+	m.probe = time.Time{}
+	m.mu.Unlock()
+}
+
+// nextCheck is how long until the shared check may run again.
+func nextCheck(m *Module) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return time.Until(m.probe).Round(time.Second)
+}
+
 // A done task whose project is gone drops its pending close and stays done.
 func TestDoneProjectGone(t *testing.T) {
 	m, _, task, _ := noCommitRig(t, 0)
@@ -148,6 +317,213 @@ func TestMergeAskCarriesTheWholeDiff(t *testing.T) {
 	open := m.C.Person.Open()
 	if len(open) != 1 || open[0].Diff != diff {
 		t.Fatalf("the person should see the whole %d-byte diff: %d asks open", len(diff), len(open))
+	}
+}
+
+// A task the pipeline gives up on goes to the lead, and recheck brings it back
+// with fresh counts; a merged task can't be rechecked.
+func TestGiveUpComesBack(t *testing.T) {
+	m, _, task, _ := noCommitRig(t, 0)
+	task.Failures, task.Round, task.Reviews = 8, 3, 3
+	m.giveUp(task, "gave up after repeated errors: HTTP 503")
+	if task.Stage != StageStopped {
+		t.Fatalf("stage %q", task.Stage)
+	}
+	if err := m.Recheck(task.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := m.Get(task.ID)
+	if got.Stage != StageLanding || got.Failures+got.Round+got.Reviews != 0 || got.Reason != "" {
+		t.Fatalf("not back in the pipeline with fresh counts: %+v", got)
+	}
+	got.Stage = StageDone
+	m.save(&got, "done")
+	if err := m.Recheck(task.ID, ""); err == nil {
+		t.Fatal("a done task was rechecked")
+	}
+}
+
+// A task the person stopped, from the control center or by leaving its PR
+// open, stays stopped: the lead can neither recheck it nor send its worker back.
+func TestPersonStopHolds(t *testing.T) {
+	for _, how := range []string{"stop", "leave open"} {
+		m, _, task, _ := noCommitRig(t, 0)
+		task.Stage = StagePerson
+		m.save(task, "waiting on the person")
+		if how == "stop" {
+			m.Stop(task.ID, "stopped by the person")
+		} else {
+			m.onPersonMerge(core.Ask{Ref: task.ID + "@abc", Answer: "leave open"})
+		}
+		for _, back := range []string{"", "try again"} {
+			if err := m.Recheck(task.ID, back); err == nil || !strings.Contains(err.Error(), "by the person") {
+				t.Fatalf("%s: recheck %q got %v", how, back, err)
+			}
+		}
+		if got, _ := m.Get(task.ID); got.Stage != StageStopped {
+			t.Fatalf("%s: stage %q", how, got.Stage)
+		}
+	}
+}
+
+// A lead can't recheck a task in a project walled off from it.
+func TestRecheckWalled(t *testing.T) {
+	m, _, _, _ := noCommitRig(t, 0)
+	m.C.Projects.Add(core.Project{Name: "secret", Repo: "me/secret", Isolated: true})
+	task := &Task{ID: "t9", Project: "secret", Title: "x", Kind: "work"}
+	m.giveUp(task, "gave up")
+	if _, err := m.opRecheck(core.Run{RunSpec: core.RunSpec{ID: "lead", Role: "lead", Project: "p"}}, []byte(`{"task":"t9"}`)); err == nil {
+		t.Fatal("a walled lead rechecked another project's task")
+	}
+	if got, _ := m.Get("t9"); got.Stage != StageStopped {
+		t.Fatalf("stage %q", got.Stage)
+	}
+}
+
+// helperRig is a work module on a project with one commit on main, in bare
+// sandboxes so a checkout's commits can be extracted.
+func helperRig(t *testing.T) (*Module, *flakyForge, core.Project) {
+	dir := t.TempDir()
+	ws := core.Workspace{Root: filepath.Join(dir, "hive")}
+	if err := ws.Init(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := ws.LoadConfig()
+	cfg.Sandbox, cfg.BareAccepted, cfg.Harness = "bare", time.Now().Format(time.RFC3339), "fake"
+	ws.SaveConfig(cfg)
+	forge := &flakyForge{Local: &core.Local{Dir: filepath.Join(dir, "forge")}}
+	if _, err := forge.EnsureRepo("me/p", ""); err != nil {
+		t.Fatal(err)
+	}
+	seed := filepath.Join(dir, "seed")
+	mustGit(t, "", "clone", "-q", forge.RepoPath("me/p"), seed)
+	os.WriteFile(filepath.Join(seed, "README.md"), []byte("# p\n"), 0o644)
+	mustGit(t, seed, "add", "-A")
+	mustGit(t, seed, "commit", "-q", "-m", "seed")
+	mustGit(t, seed, "push", "-q", "origin", "HEAD:main")
+	c, err := core.Open(ws, forge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	p, err := c.Projects.Add(core.Project{Name: "p", Repo: "me/p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &agents.Agents{C: c, Mod: modules.New(ws, c.J)}
+	return New(c, a, chat.New(c, a)), forge, p
+}
+
+// A helper whose run fails to start leaves no task behind, so nothing points
+// at a run that doesn't exist and no second worker takes up its brief.
+func TestHelperFailedStartLeavesNoTask(t *testing.T) {
+	m, _, _ := helperRig(t)
+	cfg := m.C.WS.LoadConfig()
+	cfg.Harness = "no-such-harness"
+	m.C.WS.SaveConfig(cfg)
+	if _, err := m.Spawn(core.Run{RunSpec: core.RunSpec{ID: "parent", Role: "worker"}}, "worker", "p", "write the helper part", ""); err == nil {
+		t.Fatal("the spawn started on a harness that doesn't exist")
+	}
+	if tasks := m.List(nil); len(tasks) != 0 {
+		t.Fatalf("a failed start left tasks %+v", tasks)
+	}
+}
+
+// A helper worker on a project with nothing on main yet is refused, since no
+// task could land its commits; the parent files a brief instead.
+func TestHelperOnEmptyProject(t *testing.T) {
+	m, forge, _ := helperRig(t)
+	if _, err := forge.EnsureRepo("me/e", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.C.Projects.Add(core.Project{Name: "e", Repo: "me/e"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.Spawn(core.Run{RunSpec: core.RunSpec{ID: "parent", Role: "worker"}}, "worker", "e", "start the project", "")
+	if err == nil || !strings.Contains(err.Error(), "file a brief") || len(m.List(nil)) != 0 || len(m.C.Runs.List(nil)) != 0 {
+		t.Fatalf("err %v, tasks %+v", err, m.List(nil))
+	}
+}
+
+func mustGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := core.Git(dir, args...); err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+}
+
+// A spawned helper's commits are never left in its checkout: its task pushes
+// them to a branch of its own and opens a pull request, with no issue to close.
+func TestHelperCommitsGetTheirOwnPR(t *testing.T) {
+	m, forge, p := helperRig(t)
+	spec, err := m.Spawn(core.Run{RunSpec: core.RunSpec{ID: "parent", Role: "worker"}}, "worker", "p", "write the helper part", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := m.C.Runs.Get(spec.ID); !ok || r.Parent != "parent" {
+		t.Fatalf("the helper's run wasn't started: %+v", r)
+	}
+	task, ok := m.Get(spec.Task)
+	if !ok || task.Kind != "helper" || task.Worker != spec.ID || task.Stage != StageWorking || task.From != "parent" || task.Branch != "hive/"+task.ID {
+		t.Fatalf("spec %+v, task %+v", spec, task)
+	}
+	os.WriteFile(filepath.Join(spec.Checkout, "helper.txt"), []byte("helped\n"), 0o644)
+	mustGit(t, spec.Checkout, "add", "-A")
+	mustGit(t, spec.Checkout, "commit", "-q", "-m", "helper work")
+	if err := m.land(&task, p); err != nil {
+		t.Fatal(err)
+	}
+	pr, found, err := forge.FindPR("me/p", task.Branch)
+	if err != nil || !found || pr.HeadSHA != task.SHA || task.Stage != StageTesting {
+		t.Fatalf("pr %+v found %v err %v, task %+v", pr, found, err, task)
+	}
+	if forge.Issues("me/p") != 0 || len(forge.bodies) != 1 || strings.Contains(forge.bodies[0], "Closes #") {
+		t.Fatalf("issues %d, bodies %q", forge.Issues("me/p"), forge.bodies)
+	}
+}
+
+// A helper with no commits ends its task done, with nothing said on the forge:
+// its account already went to the agent that spawned it.
+func TestHelperNoCommitsIsDone(t *testing.T) {
+	m, forge, task, p := noCommitRig(t, 0)
+	task.Kind, task.Issue = "helper", core.Issue{}
+	m.noCommits(task, p, core.Run{RunSpec: core.RunSpec{ID: "w1"}, Result: "answered"})
+	if task.Stage != StageDone || task.IssueOpen || len(forge.closed) != 0 || !logged(task, "the helper made no commits") {
+		t.Fatalf("stage %q, issue open %v, closed %v, log %v", task.Stage, task.IssueOpen, forge.closed, task.Log)
+	}
+}
+
+// A lead with no project of its own must name one even when only one exists,
+// since the ask may be a module or about the Hive itself; a sweep files to the
+// only project, and a project's own agents file to their project. An isolated
+// project it can't reach goes unnamed.
+func TestBriefNamesItsProject(t *testing.T) {
+	m, _, _, _ := noCommitRig(t, 0)
+	m.C.Projects.Add(core.Project{Name: "secret", Repo: "me/secret", Isolated: true})
+	_, err := m.opBrief(core.Run{RunSpec: core.RunSpec{ID: "lead", Role: "lead"}}, []byte(`{"title":"a cost ledger"}`))
+	if err == nil || !strings.Contains(err.Error(), "one of: p)") || strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), "create_project") {
+		t.Fatalf("want a refusal naming the projects and the module path, got %v", err)
+	}
+	if len(m.List(nil)) != 0 {
+		t.Fatal("a refused brief filed a task")
+	}
+	if _, err := m.opBrief(core.Run{RunSpec: core.RunSpec{ID: "s", Role: "sweep"}}, []byte(`{"title":"a sweep finding"}`)); err != nil {
+		t.Fatalf("a sweep with one project to file in was refused: %v", err)
+	}
+	if _, err := m.opBrief(core.Run{RunSpec: core.RunSpec{ID: "w", Role: "worker", Project: "p"}}, []byte(`{"title":"a follow-up"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if ts := m.List(nil); len(ts) != 2 || ts[0].Project != "p" || ts[1].Project != "p" {
+		t.Fatalf("want two tasks in p, got %+v", ts)
+	}
+}
+
+// Nothing files a brief into the only project unasked: the ask may be a
+// module or about the Hive.
+func TestBriefWithoutProjectRefused(t *testing.T) {
+	m, _, _, _ := noCommitRig(t, 0)
+	if _, err := m.File(Brief{Title: "a cost ledger", From: "person"}); err == nil || !strings.Contains(err.Error(), "one of: p") {
+		t.Fatalf("want a refusal naming the projects, got %v", err)
 	}
 }
 

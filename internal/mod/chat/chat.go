@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/ihsan-sa/hive-standalone-build/internal/core"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/agents"
@@ -41,6 +44,48 @@ type Message struct {
 	At     time.Time `json:"at"`
 }
 
+// File is an attachment the person pasted or dropped into a message.
+type File struct {
+	Name string `json:"name"`
+	Data []byte `json:"data"`
+}
+
+// Limit caps a posted message's body at mb megabytes (the chat_max_mb
+// setting), so the daemon never buffers an unbounded POST, and going over
+// says which setting raises it.
+func Limit(body io.ReadCloser, mb int) io.ReadCloser {
+	return limited{http.MaxBytesReader(nil, body, int64(mb)<<20), mb}
+}
+
+type limited struct {
+	io.ReadCloser
+	mb int
+}
+
+func (l limited) Read(p []byte) (int, error) {
+	n, err := l.ReadCloser.Read(p)
+	var over *http.MaxBytesError
+	if errors.As(err, &over) {
+		err = fmt.Errorf("the message is over the %d MB limit; chat_max_mb in .hive/config.json raises it", l.mb)
+	}
+	return n, err
+}
+
+// cleanName is the base name with control characters and brackets dropped,
+// so a file's name can't break the prompt's note or add text to it.
+func cleanName(n string) string {
+	n = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '[' || r == ']' {
+			return -1
+		}
+		return r
+	}, filepath.Base(n))
+	if n == "" || n == "." || n == "/" {
+		return "file"
+	}
+	return n
+}
+
 // Module holds chats.
 type Module struct {
 	C      *core.Core
@@ -50,11 +95,13 @@ type Module struct {
 	chats map[string]*Chat
 	msgs  map[string][]Message
 	read  map[string]int
+	// offline is the outage each lead was last told about, so it's said once.
+	offline map[string]string
 }
 
 // New loads chats and messages.
 func New(c *core.Core, a *agents.Agents) *Module {
-	m := &Module{C: c, Agents: a, chats: map[string]*Chat{}, msgs: map[string][]Message{}, read: map[string]int{}}
+	m := &Module{C: c, Agents: a, chats: map[string]*Chat{}, msgs: map[string][]Message{}, read: map[string]int{}, offline: map[string]string{}}
 	apply := func(e core.Event) {
 		if e.Kind == "chat.created" || e.Kind == "chat.updated" {
 			var ch Chat
@@ -138,15 +185,22 @@ func (m *Module) add(msg Message) Message {
 	m.mu.Lock()
 	m.msgs[msg.Chat] = append(m.msgs[msg.Chat], msg)
 	m.mu.Unlock()
-	m.C.J.MustAppend("chat.posted", map[string]string{"chat": msg.Chat, "id": msg.ID, "thread": msg.Thread, "from": msg.From})
+	m.C.J.MustAppend("chat.posted", map[string]string{"chat": msg.Chat, "id": msg.ID, "thread": msg.Thread, "from": msg.From, "name": msg.Name, "text": msg.Text})
 	return msg
 }
 
-// Post is the person writing in a chat; it reaches the chat's lead or agent.
-func (m *Module) Post(chatID, thread, text string) (Message, error) {
+// Post is the person, or the module from names, writing in a chat; it reaches
+// the chat's lead or agent. Files go into the run's own dir ($HIVE_RUN/attach),
+// and the prompt names their paths: the agent opens them with its own tools.
+func (m *Module) Post(chatID, thread, from, text string, files ...File) (Message, error) {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(files) == 0 {
 		return Message{}, fmt.Errorf("empty message")
+	}
+	shown := text
+	for i, f := range files {
+		files[i].Name = cleanName(f.Name)
+		shown += "\n📎 " + files[i].Name
 	}
 	m.mu.Lock()
 	ch := m.chats[chatID]
@@ -161,20 +215,52 @@ func (m *Module) Post(chatID, thread, text string) (Message, error) {
 			return Message{}, core.ErrNotFound
 		}
 	}
-	msg := m.add(Message{Chat: chatID, Thread: thread, From: "person", Name: "you", Text: text})
+	who, name, said, speaker := "person", "you", "the person", "Person"
+	if from != "" {
+		who, name, said, speaker = from, from, "module "+from, "Module "+from
+	}
+	msg := m.add(Message{Chat: chatID, Thread: thread, From: who, Name: name, Text: strings.TrimSpace(shown)})
 	switch ch.Kind {
 	case "agent":
-		if err := m.C.Runs.Send(ch.Lead, "[the person, in your chat] "+text); err != nil {
+		err := m.C.Runs.Takes(ch.Lead)
+		note := ""
+		if err == nil {
+			note, err = m.attach(ch.Lead, files)
+		}
+		if err == nil {
+			err = m.C.Runs.Send(ch.Lead, "["+said+", in your chat] "+text+note)
+		}
+		if err != nil {
 			return msg, err
 		}
 	default:
 		m.syncFor(ch)
-		prompt := fmt.Sprintf("[chat %s · thread %s · %s] Person: %s", chatID, msg.Thread, time.Now().Format("Mon 15:04"), text)
-		if err := m.deliverToLead(ch, prompt); err != nil {
+		prompt := fmt.Sprintf("[chat %s · thread %s · %s] %s: %s", chatID, msg.Thread, time.Now().Format("Mon 15:04"), speaker, text)
+		if err := m.deliverToLead(ch, prompt, files...); err != nil {
 			return msg, err
 		}
 	}
 	return msg, nil
+}
+
+// attach writes files into a run's dir and returns the note naming them.
+func (m *Module) attach(run string, files []File) (string, error) {
+	if len(files) == 0 {
+		return "", nil
+	}
+	dir := filepath.Join(m.C.WS.RunRO(run), "attach")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	note := "\n[attached; the person's files, each at its path:"
+	for i, f := range files {
+		name := fmt.Sprintf("%s-%d-%s", core.NewID(), i, f.Name)
+		if err := os.WriteFile(filepath.Join(dir, name), f.Data, 0o644); err != nil {
+			return "", err
+		}
+		note += "\n" + m.C.Runs.RunPath(run) + "/attach/" + name
+	}
+	return note + "]", nil
 }
 
 // syncWait bounds the sync that runs before a person's post reaches its lead.
@@ -214,7 +300,8 @@ func (m *Module) syncFor(ch *Chat) {
 // current ($HIVE_PROJECTS). An isolated project's lead can't see that, so it
 // works in a checkout of its own, and before each message its run dir gets
 // main.bundle, the clone's tip, to fetch: host git never runs in its checkout.
-func (m *Module) deliverToLead(ch *Chat, text string) error {
+// Files go in the lead's run dir once its id is known.
+func (m *Module) deliverToLead(ch *Chat, text string, files ...File) error {
 	var p core.Project
 	if ch.Kind == "project" {
 		var ok bool
@@ -226,10 +313,19 @@ func (m *Module) deliverToLead(ch *Chat, text string) error {
 	if ch.Lead != "" {
 		if r, ok := m.C.Runs.Get(ch.Lead); ok && (!r.Terminal()) {
 			bundle(r.ID)
-			return m.C.Runs.Send(r.ID, text)
+			note, err := m.attach(r.ID, files)
+			if err != nil {
+				return err
+			}
+			return m.C.Runs.Send(r.ID, text+note)
 		}
 	}
 	id := "lead-" + strings.NewReplacer(":", "-").Replace(ch.ID) + "-" + core.NewID()[14:]
+	note, err := m.attach(id, files)
+	if err != nil {
+		return err
+	}
+	text += note
 	name, project := "lead", ""
 	dir := filepath.Join(m.C.WS.Hive(), "leads", "main")
 	if ch.Kind == "project" {
@@ -290,7 +386,18 @@ func (m *Module) Notify(chatID, thread, text string) {
 		return
 	}
 	m.add(Message{Chat: chatID, Thread: thread, From: "hive", Name: "hive", Text: text})
-	if ch.Lead != "" {
+	m.ToLead(chatID, thread, text)
+}
+
+// ToLead tells only the chat's lead, which judges what the person hears.
+func (m *Module) ToLead(chatID, thread, text string) {
+	if chatID == "" {
+		chatID = "lead"
+	}
+	m.mu.Lock()
+	ch := m.chats[chatID]
+	m.mu.Unlock()
+	if ch != nil && ch.Lead != "" {
 		if r, ok := m.C.Runs.Get(ch.Lead); ok && !r.Terminal() {
 			m.C.Runs.Send(r.ID, fmt.Sprintf("[notification · thread %s] %s", thread, text))
 		}
@@ -323,20 +430,31 @@ func (m *Module) onEvent(e core.Event) {
 	switch e.Kind {
 	case "run.turn_ended":
 		var t struct {
-			ID     string `json:"id"`
-			Turn   int    `json:"turn"`
-			Status string `json:"status"`
-			Result *struct {
+			ID      string `json:"id"`
+			Turn    int    `json:"turn"`
+			Status  string `json:"status"`
+			Offline string `json:"offline"`
+			Result  *struct {
 				Text    string `json:"text"`
 				IsError bool   `json:"is_error"`
 			} `json:"result"`
 		}
 		e.Decode(&t)
-		if t.Result == nil || t.Result.IsError {
-			return
-		}
 		r, ok := m.C.Runs.Get(t.ID)
 		if !ok || r.Role != "lead" {
+			return
+		}
+		m.mu.Lock()
+		told := m.offline[t.ID]
+		m.offline[t.ID] = t.Offline
+		m.mu.Unlock()
+		if t.Offline != "" && t.Offline != told {
+			r.Turn = t.Turn
+			if chatID, thread := m.CurrentThread(r); chatID != "" {
+				m.add(Message{Chat: chatID, Thread: thread, From: "hive", Name: "hive", Text: strings.ToUpper(t.Offline[:1]) + t.Offline[1:] + ". The lead will answer on its own once it can."})
+			}
+		}
+		if t.Result == nil || t.Result.IsError {
 			return
 		}
 		text := strings.TrimSpace(t.Result.Text)

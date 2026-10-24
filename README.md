@@ -28,14 +28,14 @@ A repository you name that doesn't exist yet starts with no test and no score: `
 
     {
       "test": "go test ./...",
-      "score": {"command": "./score.sh", "direction": "higher", "tolerance": 0.5}
+      "score": {"command": "./score.sh", "direction": "higher", "tolerance": 0.5, "paths": ["score.sh", "bench/"]}
     }
 
-The score command's output ends with one number; `direction` says whether higher or lower is better, and `tolerance` is how much noise to ignore. The demo project comes with both.
+The score command's output ends with one number; `direction` says whether higher or lower is better, and `tolerance` is how much noise to ignore. List every file the score reads in `paths`: the scripts it calls, the tests it runs and their data. Only a `./` file the command names counts without that, as a best guess, and the Hive warns while `paths` is empty. Those are the score itself: a change to one waits for your approval, and its merge starts a new baseline instead of being compared with numbers the old score gave. The demo project comes with both.
 
 ## Models
 
-The model workers and leads use and the reviewer's model are under **Settings** in the control center. They're stored in `.hive/config.json` in your Hive folder (`model` and `reviewer_model`), and `projects.<name>.model` overrides the model for one project.
+The model workers use, the lead's and the reviewer's are under **Settings** in the control center. They're stored in `.hive/config.json` in your Hive folder (`model`, `lead_model` and `reviewer_model`), and `projects.<name>.model` overrides the worker and lead model for one project, because the more specific setting wins.
 
 ## Use
 
@@ -45,15 +45,18 @@ The model workers and leads use and the reviewer's model are under **Settings** 
     hive improve          run an improvement sweep now
     hive doctor           check the install and sandbox
     hive update           newest release
+    hive update --release v0.1.2   that release, older ones too; it stays there with auto-update off until `hive update`
     hive shutdown         stop it (agents finish their turn; `hive` starts it again)
 
 The Hive keeps running in the background and starts with the machine. Closing the control center never stops work.
+
+In a chat, drop a file or paste one's path to attach it, and ctrl+v attaches an image on the clipboard. One message, files and all, can be up to 300 MB; `chat_max_mb` in `.hive/config.json` changes that.
 
 ## What's safe and what isn't
 
 - Agents hold no logins; they get a short-lived token per turn.
 - Agents write only their checkout and a scratch home; network is outbound only, never to this machine or your LAN.
-- Main changes only through the gate. Goals, the score and project settings are yours to merge.
+- Main changes only through the gate. Goals, the score and project settings merge on a warden's read, and you're told after; at autonomy 1 they're yours to merge.
 - When an agent needs something beyond its sandbox, like installing a package, the Hive can run it for them. At the default autonomy (2) a warden agent weighs the step and can run it on your machine, outside any sandbox, as your user (and as root wherever sudo doesn't ask for a password). Those scripts use the host's paths. A step that's hard to undo goes to a panel of three agents that votes first. At autonomy 1 the step comes to you in **Waiting** before any warden sees it.
 - Spending money, credentials, opening the machine to the network and anything sent in your name come to you, whatever a warden or panel says. The Hive spots these by reading the step's words, so it errs toward asking you, but a step that hides what it does can slip past.
 

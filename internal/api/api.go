@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,7 +25,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/work"
 )
 
-// DaemonInfo is .hive/daemon.json.
+// DaemonInfo is .hive/private/daemon.json.
 type DaemonInfo struct {
 	PID        int       `json:"pid"`
 	Started    time.Time `json:"started"`
@@ -40,6 +42,7 @@ type State struct {
 	Workspace  string             `json:"workspace"`
 	Sandbox    string             `json:"sandbox"`
 	SandboxErr string             `json:"sandbox_err,omitempty"`
+	Offline    string             `json:"offline,omitempty"` // what the Hive can't reach right now, in one plain line
 	Projects   []ProjectView      `json:"projects"`
 	Runs       []core.Run         `json:"runs"`
 	Plans      []core.Plan        `json:"plans"`
@@ -47,12 +50,14 @@ type State struct {
 	StepBacks  []improve.StepBack `json:"stepbacks"`
 	Asks       []core.Ask         `json:"asks"`
 	Alerts     []Alert            `json:"alerts"`
+	Updated    *Updated           `json:"updated,omitempty"`
 	Jobs       []system.JobState  `json:"jobs"`
 	Wakeups    []system.Wakeup    `json:"wakeups"`
 	Modules    []ModuleView       `json:"modules"`
 	Chats      []ChatView         `json:"chats"`
 	Requests   []risk.Request     `json:"requests"`
 	Config     core.Config        `json:"config"`
+	ConfigErr  string             `json:"config_err,omitempty"`
 }
 
 // ProjectView is one project on the dashboard.
@@ -62,6 +67,13 @@ type ProjectView struct {
 	Tasks  []work.Task           `json:"tasks"`
 	Scores []improve.Measurement `json:"scores"`
 	Best   *float64              `json:"best,omitempty"`
+}
+
+// Updated is the update that brought in this version, with its release notes.
+type Updated struct {
+	Seq   int64  `json:"seq"`
+	To    string `json:"to"`
+	Notes string `json:"notes"`
 }
 
 // Alert is a ledger alert.
@@ -79,6 +91,8 @@ type ModuleView struct {
 	Source      string   `json:"source"`
 	Release     string   `json:"release"`
 	Projects    []string `json:"projects"`
+	Hooks       []string `json:"hooks,omitempty"`
+	Status      string   `json:"status,omitempty"` // a module with a program: running, or why not
 }
 
 // ChatView is one chat in the list.
@@ -132,6 +146,9 @@ func Dial(ws core.Workspace) (*Client, error) {
 func readInfo(ws core.Workspace) (DaemonInfo, error) {
 	var info DaemonInfo
 	raw, err := os.ReadFile(ws.DaemonFile())
+	if errors.Is(err, fs.ErrNotExist) {
+		raw, err = os.ReadFile(filepath.Join(ws.Hive(), "daemon.json")) // a daemon from before .hive/private
+	}
 	if err != nil {
 		return info, errors.New("the Hive isn't running")
 	}
@@ -215,4 +232,10 @@ func (c *Client) Ping() bool {
 func (c *Client) State() (State, error) {
 	var s State
 	return s, c.Do("GET", "/api/state", nil, &s)
+}
+
+// ConfigView is GET /api/config: every setting that read, and what config.json got wrong.
+type ConfigView struct {
+	core.Config
+	LoadError string `json:"load_error,omitempty"`
 }

@@ -69,7 +69,7 @@ A project is a GitHub repository the Hive works on, with its own goals, its own 
 - Each project carries a goals file in its repository, in the person's own words where they said them. Agents read it before they work and read it back when they report. Changing a standing goal is a change the person merges.
 - Each project names, where it can, a test command and a score: one number, which way is better, and how much noise to tolerate. The improve loop needs those; a project without a score still gets tests and reviews.
 - Projects see one another by default. An agent in one project can message an agent in another, ask it for a tool, or start work there. A project can be isolated when the person wants that, with fewer modules and no view of the rest.
-- Modules come from projects. A project whose output is a tool for other agents releases it as a module. The lead can install a module from a git repository or an official source, modules record where they came from, and they update themselves when their source releases. Installing a module is a warden-level step, since it brings outside code onto the machine.
+- Modules come from projects. A project whose output is a tool for other agents releases it as a module. The lead can install a module from a git repository or an official source, modules record where they came from, and they update themselves when their source releases. Installing a module is a warden-level step, since it brings outside code onto the machine. A module can carry behaviour as well as prompts: a program the daemon keeps running, which serves hooks (a source of asks, a channel, a step after a run or merge, status, idle) through a slice of the control API, and which runs only once a read-only review has read its code at that release.
 - The server edition's workspaces module gives each workspace its own lead, folder and set of projects. The consumer version is one workspace, and nothing in it should make that module hard to add.
 
 ## 8. How work lands
@@ -129,7 +129,7 @@ The control center is a terminal UI, so it works in any terminal and over SSH. I
 - GitHub holds the code, the issues and the pull requests. The folder holds everything else as plain, append-only records: events, chats, scores, each run's brief, notes and output. Nothing is in only one agent's memory.
 - A restart reads those records and resumes: an unfinished run continues from its checkout with its notes, a pull request that was waiting is watched again, a merge that was pinned is re-attempted. A restart never starts a second run for the same ask and never opens a second issue for it.
 - An agent's checkout is treated as data by the core. Commits are taken out of it by the effects process and checked to descend from main before anything is pushed.
-- The knowledge base is the Hive's memory across projects and runs. Agents write to it and read from it, and a filing process consolidates it. A run's own note is context for the next run, never a decision.
+- The knowledge base is the Hive's memory across projects and runs. Everything the Hive does is filed into it on its own from the event log: each request and its states, warden and tribunal decisions, chats, runs and tasks from ask to merge or refusal, caught up after a restart and never filed twice. Agents add notes and search it, and the lead searches it before it says what happened or what was decided. A filing process consolidates the notes. A run's own note is context for the next run, never a decision.
 
 Failures, and what happens:
 
