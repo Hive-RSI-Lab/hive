@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -29,6 +30,9 @@ func TestGhEnvByOwner(t *testing.T) {
 }
 
 func TestOwnerTokenReachesGhAndGit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs sh")
+	}
 	dir := t.TempDir()
 	f := filepath.Join(dir, "org.token")
 	os.WriteFile(f, []byte("org-secret\n"), 0o600)
