@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -59,6 +60,7 @@ type Check struct {
 	OK      bool      `json:"ok"`
 	Score   *float64  `json:"score,omitempty"`
 	Output  string    `json:"output"`
+	CantRun string    `json:"cant_run,omitempty"` // why the command couldn't start (a missing tool): no verdict on the commit
 	At      time.Time `json:"at"`
 }
 
@@ -99,7 +101,9 @@ func NewEffects(ws Workspace, j *Journal, forge Forge, sb func() (sandbox.Sandbo
 		case "effect.checked":
 			var c Check
 			ev.Decode(&c)
-			e.checks[c.Project+"@"+c.SHA+"/"+c.Kind] = c
+			if c.CantRun == "" { // a check that couldn't start runs again next time
+				e.checks[c.Project+"@"+c.SHA+"/"+c.Kind] = c
+			}
 		case "effect.verdict":
 			var v Verdict
 			ev.Decode(&v)
@@ -372,6 +376,10 @@ func (e *Effects) RunCheck(p Project, sha, kind, command string) Check {
 		return record()
 	}
 	c.OK = code == 0
+	if tool := MissingTool(code, out); tool != "" {
+		c.CantRun = "can't run: " + tool + " is not installed where checks run"
+		return record()
+	}
 	if kind == "score" && c.OK {
 		v, perr := scoreOf(out)
 		if perr != nil {
@@ -381,6 +389,24 @@ func (e *Effects) RunCheck(p Project, sha, kind, command string) Check {
 		}
 	}
 	return record()
+}
+
+// missingTool matches the shell's "not found" for a command looked up on the
+// PATH: dash's "/bin/sh: 1: go: not found", bash's "bash: go: command not found"
+// and env's "env: 'go': No such file or directory".
+var missingTool = regexp.MustCompile(`(?m)^(?:\S*sh: (?:line )?\d*:? ?([^\s/:']+): (?:command )?not found|env: '?([^\s/:']+)'?: No such file or directory)\s*$`)
+
+// MissingTool names the tool a check's command couldn't find, or "" when it
+// ran. Only exit 127 with the shell's own message counts, and only for a bare
+// name: a missing ./script is the commit's fault, not the machine's.
+func MissingTool(code int, out string) string {
+	if code != 127 {
+		return ""
+	}
+	if m := missingTool.FindStringSubmatch(out); m != nil {
+		return m[1] + m[2]
+	}
+	return ""
 }
 
 // scoreOf reads the score from a score command's output: the last word of

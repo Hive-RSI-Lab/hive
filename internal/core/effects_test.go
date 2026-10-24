@@ -493,3 +493,26 @@ func TestScoreOf(t *testing.T) {
 		}
 	}
 }
+
+// Only the shell's own "not found" for a bare tool name, at exit 127, is a
+// missing tool; a missing ./script or an ordinary failure is the commit's.
+func TestMissingTool(t *testing.T) {
+	for _, c := range []struct {
+		code int
+		out  string
+		want string
+	}{
+		{127, "/bin/sh: 1: go: not found\n", "go"},
+		{127, "bash: line 1: cargo: command not found", "cargo"},
+		{127, "sh: npm: command not found\n", "npm"},
+		{127, "env: 'python3': No such file or directory", "python3"},
+		{127, "/bin/sh: 1: ./build.sh: not found", ""},
+		{1, "/bin/sh: 1: go: not found", ""},
+		{1, "--- FAIL: TestX\nFAIL", ""},
+		{127, "some test printed exit 127", ""},
+	} {
+		if got := MissingTool(c.code, c.out); got != c.want {
+			t.Errorf("MissingTool(%d, %q) = %q, want %q", c.code, c.out, got, c.want)
+		}
+	}
+}
