@@ -602,14 +602,28 @@ func TestStalls(t *testing.T) {
 	for title := range asks {
 		h.wait(title+" to land", 4*minute, taskStage("stall", title, work.StageDone))
 	}
-	st := h.state()
-	alerts := map[string][]string{}
-	for _, a := range st.Alerts {
-		if a.Kind == "stall" {
-			alerts[a.Ref] = append(alerts[a.Ref], a.Text)
+	hung := map[string]string{"hung worker": "restarted its turn", "hung reviewer": "restarted its turn", "hung check": "handed it to the lead"}
+	stalls := func(st api.State) map[string][]string {
+		alerts := map[string][]string{}
+		for _, a := range st.Alerts {
+			if a.Kind == "stall" {
+				alerts[a.Ref] = append(alerts[a.Ref], a.Text)
+			}
 		}
+		return alerts
 	}
-	for title, did := range map[string]string{"hung worker": "restarted its turn", "hung reviewer": "restarted its turn", "hung check": "handed it to the lead"} {
+	// A task can land before the watcher's next pass says it moved on.
+	st := h.wait("every stall alert to say it moved on", minute, func(st api.State) bool {
+		for title := range hung {
+			tk, _ := task(st, "stall", title)
+			if got := stalls(st)["task:"+tk.ID]; len(got) == 0 || !strings.Contains(got[len(got)-1], "moved on") {
+				return false
+			}
+		}
+		return true
+	})
+	alerts := stalls(st)
+	for title, did := range hung {
 		tk, _ := task(st, "stall", title)
 		if got := alerts["task:"+tk.ID]; len(got) != 1 || !strings.Contains(got[0], did) || !strings.Contains(got[0], "moved on") {
 			t.Fatalf("%s: want one alert that says %q and that it moved on, got %q", title, did, got)
@@ -759,6 +773,158 @@ func TestRiskPaths(t *testing.T) {
 	}
 }
 
+// TestWaitingReachesThePerson: a root install the warden passes on reaches
+// Waiting and the lead, the person approves one and refuses the other from a
+// shell, and each worker hears the answer: the approved one lands, the
+// refused one stops.
+func TestWaitingReachesThePerson(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.seed("me/wait", map[string]string{".hive/project.json": `{"test": "true"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "wait", "repo": "me/wait"}, nil)
+	for _, title := range []string{"yes", "no"} {
+		h.post("/api/ask", map[string]string{"project": "wait", "title": title, "known": "FAKE:needpackage FAKE:wardenperson" + title}, nil)
+	}
+	req := func(st api.State, title string) (risk.Request, core.Ask, bool) {
+		for _, r := range st.Requests {
+			if strings.Contains(r.Why, "wardenperson"+title) {
+				for _, a := range st.Asks {
+					if a.ID == r.Ask {
+						return r, a, r.State == "asked"
+					}
+				}
+			}
+		}
+		return risk.Request{}, core.Ask{}, false
+	}
+	st := h.wait("both installs to wait on the person", 3*minute, func(st api.State) bool {
+		_, _, y := req(st, "yes")
+		_, _, n := req(st, "no")
+		return y && n
+	})
+	_, yes, _ := req(st, "yes")
+	_, no, _ := req(st, "no")
+	if strings.Join(yes.Options, "|") != "run|declined" || !strings.Contains(yes.Detail, "install the left-pad package") || !strings.Contains(yes.Detail, "echo apt-get install -y left-pad") {
+		t.Fatalf("Waiting doesn't say what is asked: %+v", yes)
+	}
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "Can I approve the worker installing it?"}, nil)
+	r, _, _ := req(st, "yes")
+	since, _ := json.Marshal(r.Updated)
+	h.wait("the lead to see where the request stands, since when, and how to answer", 2*minute, func(st api.State) bool {
+		return h.replied("lead", `"State":"asked","Warden":"`+r.Warden+`"`)(st) && h.replied("lead", `"Since":`+string(since))(st) && h.replied("lead", "approve "+yes.ID)(st)
+	})
+	for verb, a := range map[string]core.Ask{"approve": yes, "refuse": no} {
+		cmd := exec.Command(bin, verb, a.ID)
+		cmd.Env = append(os.Environ(), "HIVE_HOME="+h.ws.Root, "HIVE_FORGE=local:"+h.forge.Dir)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("hive %s: %v %s", verb, err, out)
+		}
+	}
+	st = h.wait("the approved install to run", 2*minute, func(st api.State) bool {
+		for _, r := range st.Requests {
+			if r.Ask == yes.ID {
+				return r.State == "done"
+			}
+		}
+		return false
+	})
+	h.wait("the approved worker to land", 3*minute, taskStage("wait", "yes", work.StageDone))
+	h.wait("the refused worker to stop", 3*minute, taskStage("wait", "no", work.StageBlocked))
+}
+
+// TestBlockedWorkComesBack replays the first real run: each worker's tests fail
+// on a missing tool, it asks a warden and finishes blocked at once. Where the
+// warden installs the tool, its answer wakes the worker and the PR merges;
+// where it declines and the person installs the tool, the lead re-runs the check.
+func TestBlockedWorkComesBack(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	// the sandboxed check sees system dirs like /var, not the test's temp dir
+	dir, err := os.MkdirTemp("/var/tmp", "hive-tool-")
+	if err != nil {
+		dir = t.TempDir()
+	} else {
+		t.Cleanup(func() { os.RemoveAll(dir) })
+	}
+	for _, name := range []string{"tool", "rerun"} {
+		marker := filepath.Join(dir, name)
+		// main is green; only the worker's change (under work/) needs the tool
+		h.seed("me/"+name, map[string]string{".hive/project.json": `{"test": "test -f ` + filepath.ToSlash(marker) + ` || test ! -d work"}`, ".hive/goals.md": "# Goals\n"})
+		h.post("/api/project", map[string]any{"name": name, "repo": "me/" + name}, nil)
+		known := "FAKE:needtool " + filepath.ToSlash(marker)
+		if name == "rerun" {
+			known += " FAKE:wardendecline"
+		}
+		h.post("/api/ask", map[string]string{"project": name, "title": name, "known": known}, nil)
+	}
+	h.wait("the warden's answer to wake the worker and its PR to merge", 4*minute, taskStage("tool", "tool", work.StageDone))
+	st := h.wait("the declined worker to stay blocked", 4*minute, func(st api.State) bool {
+		t, ok := task(st, "rerun", "rerun")
+		return ok && t.Stage == work.StageBlocked && strings.Contains(t.Reason, "declined") && t.PR.Number != 0
+	})
+	rerun, _ := task(st, "rerun", "rerun")
+	os.WriteFile(filepath.Join(dir, "rerun"), nil, 0o644) // the person installs the tool
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "recheck " + rerun.ID}, nil)
+	h.wait("the lead's re-run to pass and merge the PR", 4*minute, taskStage("rerun", "rerun", work.StageDone))
+}
+
+// TestStoppedWorkComesBack: a change whose tests keep failing stops after its
+// fix rounds and goes to the lead, not the person; the lead sends it back with
+// what remains and it merges.
+func TestStoppedWorkComesBack(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.seed("me/stop", map[string]string{".hive/project.json": `{"test": "test ! -f BROKEN"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "stop", "repo": "me/stop"}, nil)
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "hello"}, nil) // the lead is up to be told
+	title := "break the build FAKE:leadfixes"
+	h.post("/api/ask", map[string]string{"project": "stop", "title": title, "known": "FAKE:breaktests"}, nil)
+	st := h.wait("the lead's call to bring it back past the fix rounds and merge it", 6*minute, taskStage("stop", title, work.StageDone))
+	tk, _ := task(st, "stop", title)
+	stopped := false
+	for _, e := range tk.Log {
+		stopped = stopped || strings.Contains(e.Text, "stopped after 3 rounds")
+	}
+	if !stopped {
+		t.Fatalf("it never stopped after its rounds: %+v", tk.Log)
+	}
+	for _, msg := range h.messages("lead") {
+		if strings.Contains(msg.Text, "Stopped") {
+			t.Fatalf("the person was told of work the lead owns: %q", msg.Text)
+		}
+	}
+}
+
+// TestWardenOutlivesARestart: a warden mid-turn when the Hive restarts still
+// decides, and once its process ends it leaves the live list. Here the test
+// process adopts the orphaned turn and never reaps it, as a container's PID 1
+// may not, so the ended turn lingers as a zombie, which is not alive.
+func TestWardenOutlivesARestart(t *testing.T) {
+	if adopt == nil {
+		t.Skip("a child subreaper is Linux's")
+	}
+	adopt()
+	h := start(t)
+	h.seed("me/restart", map[string]string{".hive/project.json": `{"test": "true"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "restart", "repo": "me/restart"}, nil)
+	h.post("/api/ask", map[string]string{"project": "restart", "title": "install", "known": "FAKE:needpackage FAKE:wardenslow"}, nil)
+	warden := func(st api.State) (core.Run, bool) {
+		for _, r := range st.Runs {
+			if r.Role == "warden" {
+				return r, true
+			}
+		}
+		return core.Run{}, false
+	}
+	h.wait("the warden's first turn", 2*minute, func(st api.State) bool { w, ok := warden(st); return ok && w.Status == core.StatusRunning })
+	h.kill()
+	h.launch()
+	st := h.wait("the warden to decide and leave the live list", 2*minute, func(st api.State) bool { w, ok := warden(st); return ok && w.Terminal() })
+	if w, _ := warden(st); w.Status != core.StatusDone || len(st.Requests) == 0 || st.Requests[0].Decision != "do" {
+		t.Fatalf("warden %s, requests %+v", w.Status, st.Requests)
+	}
+}
+
 // TestOutsideStep: an ask longer than a label reaches the worker whole, and a
 // path it names outside the checkout goes to a tribunal as a T3 step. Under
 // HIVE_E2E_SANDBOX=auto the worker can't see the path and must still file it.
@@ -780,6 +946,67 @@ func TestOutsideStep(t *testing.T) {
 		return false
 	})
 	h.wait("the worker to land", 3*minute, taskStage("out", title, work.StageDone))
+}
+
+// A helper a worker spawns ships like any worker: its commit gets a branch and
+// pull request of its own, no issue, and reaches main.
+func TestHelperShips(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.seed("me/helpers", map[string]string{".hive/project.json": `{"test": "true"}`, ".hive/goals.md": "# Goals\n"})
+	h.post("/api/project", map[string]any{"name": "helpers", "repo": "me/helpers"}, nil)
+	h.post("/api/ask", map[string]string{"project": "helpers", "title": "split the work with a helper FAKE:spawnhelper"}, nil)
+	st := h.wait("the helper's work to merge", 4*minute, taskStage("helpers", "FAKE helper: write the helper part", work.StageDone))
+	tk, _ := task(st, "helpers", "FAKE helper: write the helper part")
+	parent, _ := task(st, "helpers", "split the work with a helper FAKE:spawnhelper")
+	if tk.Issue.Number != 0 || tk.PR.Number == 0 || tk.MergeSHA == "" || tk.From != parent.Worker {
+		t.Fatalf("helper task %+v, parent %+v", tk, parent)
+	}
+	// Merges squash, so the helper's commit itself isn't on main; its change is.
+	repo := h.forge.RepoPath("me/helpers")
+	files, err := core.Git(repo, "diff", "--name-only", tk.Base, tk.SHA)
+	if err != nil || strings.TrimSpace(files) == "" {
+		t.Fatalf("the helper's change %s..%s: %q %v", tk.Base, tk.SHA, files, err)
+	}
+	if out, err := core.Git(repo, append([]string{"diff", "--stat", tk.SHA, "main", "--"}, strings.Fields(files)...)...); err != nil || strings.TrimSpace(out) != "" {
+		t.Fatalf("the helper's change is not on main: %s %v", out, err)
+	}
+	if n := h.forge.Issues("me/helpers"); n != 1 {
+		t.Fatalf("issues: %d, want the parent's only", n)
+	}
+}
+
+// When the lead can't reach Claude, the chat and the control center say so in
+// one plain line, and the turn is retried on its own: the lead answers once
+// Claude is back, and the notice clears.
+func TestOfflineLeadSaysWhy(t *testing.T) {
+	t.Parallel()
+	h := start(t)
+	h.post("/api/chat", map[string]string{"chat": "lead", "text": "hello FAKE:offline"}, nil)
+	const why = "can't reach Claude: the connection failed"
+	h.wait("the notice in the chat and the control center", minute, func(st api.State) bool {
+		if st.Offline != why {
+			return false
+		}
+		for _, m := range h.messages("lead") {
+			if m.From == "hive" && strings.Contains(m.Text, "Can't reach Claude") {
+				return true
+			}
+		}
+		return false
+	})
+	h.wait("the lead's answer once Claude is back", 2*minute, func(st api.State) bool {
+		return st.Offline == "" && h.replied("lead", "I'm the lead")(st)
+	})
+	n := 0
+	for _, m := range h.messages("lead") {
+		if m.From == "hive" && strings.Contains(m.Text, "Can't reach Claude") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the notice was posted %d times, want once", n)
+	}
 }
 
 // TestAgentsReadTheHive: a worker reads another run's log, a chat, a warden's
@@ -881,6 +1108,9 @@ func TestToolInstall(t *testing.T) {
 	}
 }
 
+// adopt makes this process adopt its daemons' orphans (Linux only).
+var adopt func()
+
 // TestLiveWarden is the host probe for a real harness: run it with
 // HIVE_E2E_HARNESS=claude. A worker that needs a package outside its checkout
 // should file a T2 step, and a real warden should settle it.
@@ -903,6 +1133,14 @@ func TestLiveWarden(t *testing.T) {
 	for _, r := range st.Requests {
 		t.Logf("%s %s: decision %q state %q reason %q script %q", r.Tier, r.Want, r.Decision, r.State, r.Reason, r.Script)
 	}
+	h.wait("the warden that decided to end its turn", 5*minute, func(st api.State) bool {
+		for _, r := range st.Runs {
+			if r.Role == "warden" && r.Status == core.StatusRunning {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // TestLiveTribunal is the host probe for a real panel: run it with
@@ -1032,7 +1270,7 @@ func TestStepBack(t *testing.T) {
 	}
 	stepback := func(st api.State, project string) (improve.StepBack, bool) {
 		for _, s := range st.StepBacks {
-			if s.Project == project && s.Ended.After(s.Started) {
+			if s.Project == project && !s.Ended.IsZero() { // Windows' clock can stamp both ends alike
 				return s, true
 			}
 		}

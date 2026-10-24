@@ -50,9 +50,11 @@ type Task struct {
 	From      string            `json:"from"` // run id, person, or sweep run
 	Chat      string            `json:"chat,omitempty"`
 	Thread    string            `json:"thread,omitempty"`
-	Kind      string            `json:"kind"` // work | revert
+	Kind      string            `json:"kind"` // work | revert | helper (spawned, no issue)
 	Stage     string            `json:"stage"`
 	Reason    string            `json:"reason,omitempty"`
+	Recheck   bool              `json:"recheck,omitempty"`   // landed again on the same commit, so its test runs again
+	ByPerson  bool              `json:"by_person,omitempty"` // the person stopped it or left it open, so the lead can't bring it back
 	Issue     core.Issue        `json:"issue"`
 	Worker    string            `json:"worker,omitempty"`
 	Base      string            `json:"base,omitempty"`
@@ -122,6 +124,15 @@ type Module struct {
 	// already raised, so each is raised once whatever the tasks say now. It
 	// grows by one key per red main commit and isn't pruned; that's small.
 	mainRed map[string]bool
+	// offline is why the forge was last unreachable, until it answers again;
+	// downs counts the failed steps and checks since, probe is when it may next
+	// be checked, probing says a check is out, and online is when it last came
+	// back.
+	offline string
+	downs   int
+	probe   time.Time
+	probing bool
+	online  time.Time
 }
 
 // New loads tasks and registers the brief op.
@@ -149,6 +160,7 @@ func New(c *core.Core, a *agents.Agents, ch *chat.Module) *Module {
 	c.J.Replay(apply)
 	c.J.Subscribe(apply)
 	c.Runs.Ops().Register(core.Op{Name: "brief", Help: `{"title","done","known","project"}`, Fn: m.opBrief})
+	c.Runs.Ops().Register(core.Op{Name: "recheck", Roles: []string{"lead"}, Help: `{"task","back"} -> a blocked or stopped task's commits are pushed and checked again (not one the person stopped); with back, its worker gets that text and works on`, Fn: m.opRecheck})
 	c.Person.Handle("merge", m.onPersonMerge)
 	return m
 }
@@ -207,15 +219,11 @@ func (m *Module) File(b Brief) (Task, error) {
 		return Task{}, errors.New("a brief needs a title")
 	}
 	if b.Project == "" {
-		ps := m.C.Projects.List()
-		if len(ps) != 1 {
-			names := []string{}
-			for _, p := range ps {
-				names = append(names, p.Name)
-			}
-			return Task{}, fmt.Errorf("say which project (one of: %s)", strings.Join(names, ", "))
+		names := []string{}
+		for _, p := range m.C.Projects.List() {
+			names = append(names, p.Name)
 		}
-		b.Project = ps[0].Name
+		return Task{}, fmt.Errorf("say which project (one of: %s)", strings.Join(names, ", "))
 	}
 	if _, ok := m.C.Projects.Get(b.Project); !ok {
 		return Task{}, fmt.Errorf("no project %q", b.Project)
@@ -235,16 +243,81 @@ func (m *Module) opBrief(r core.Run, args json.RawMessage) (any, error) {
 	if b.Project == "" {
 		b.Project = r.Project
 	}
-	if r.Role == "lead" {
-		b.Chat, b.Thread = m.Chat.CurrentThread(r)
-	} else if parent, ok := m.taskOf(r.ID); ok {
-		b.Chat, b.Thread = parent.Chat, parent.Thread
+	// An agent with no project of its own names the target. For the lead the
+	// only project is not a safe guess, since the ask may be a module or about
+	// the Hive; a sweep's findings come from the records, so it may be.
+	names := []string{}
+	for _, p := range m.C.Projects.List() {
+		if m.C.Runs.Walled(r, p.Name) == nil {
+			names = append(names, p.Name)
+		}
 	}
+	if b.Project == "" && r.Role == "sweep" && len(names) == 1 {
+		b.Project = names[0]
+	}
+	if b.Project == "" {
+		return nil, fmt.Errorf("say which project with --project (one of: %s) and tell the person why; a new module gets a project of its own first (create_project), then install_module --project", strings.Join(names, ", "))
+	}
+	if err := m.C.Runs.Walled(r, b.Project); err != nil {
+		return nil, err
+	}
+	b.Chat, b.Thread = m.thread(r)
 	t, err := m.File(b)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]string{"task": t.ID, "note": "filed; it becomes an issue and a worker shortly"}, nil
+}
+
+// thread is the chat thread that hears about work r asks for: a lead's
+// current thread, or the thread of the task r works on.
+func (m *Module) thread(r core.Run) (string, string) {
+	if r.Role == "lead" {
+		return m.Chat.CurrentThread(r)
+	}
+	if parent, ok := m.taskOf(r.ID); ok {
+		return parent.Chat, parent.Thread
+	}
+	return "", ""
+}
+
+// Spawn is the core's spawn hook. A helper worker on a project ships like any
+// worker: it gets a task with no issue, so its commits go to their own branch
+// and pull request, are tested, reviewed and merged, and its parent's thread
+// hears how that went. It starts that run itself. Reviewers and helpers with no
+// project go to the agents module, and the spawn op starts those.
+func (m *Module) Spawn(parent core.Run, role, project, brief, model string) (core.RunSpec, error) {
+	p, ok := m.C.Projects.Get(project)
+	if role != "worker" || !ok {
+		return m.Agents.Spawner(parent, role, project, brief, model)
+	}
+	base, err := m.C.Effects.Sync(p)
+	if err != nil {
+		return core.RunSpec{}, err
+	}
+	if base == "" { // no task can land a branch off an empty main, so its commits would go nowhere
+		return core.RunSpec{}, fmt.Errorf("project %s has no commit on main yet, so a helper worker's commits could never land; file a brief instead", p.Name)
+	}
+	t := &Task{ID: core.NewID(), Project: p.Name, Title: strings.TrimSpace(brief), From: parent.ID, Kind: "helper",
+		Stage: StageWorking, Base: base, Created: time.Now().UTC()}
+	t.Chat, t.Thread = m.thread(parent)
+	t.Worker, t.Branch = "w-"+t.ID, "hive/"+t.ID
+	dir, err := m.C.Effects.NewCheckout(p, t.Worker, base)
+	if err != nil {
+		return core.RunSpec{}, err
+	}
+	s := m.Agents.Spec(t.Worker, "worker", p.Name, dir, brief+"\n\n(You are a helper spawned by "+parent.ID+"; your account goes back to it, and your commits get their own pull request as task "+t.ID+".)")
+	s.Task, s.Parent = t.ID, parent.ID
+	if model != "" {
+		s.Model = model
+	}
+	// Like startWorker, the run starts before the task names it, so a task
+	// never points at a run that doesn't exist.
+	if _, err := m.C.Runs.Start(s); err != nil {
+		return core.RunSpec{}, err
+	}
+	m.save(t, "helper of "+parent.ID+": worker "+t.Worker)
+	return s, nil
 }
 
 func (m *Module) taskOf(runID string) (Task, bool) {
@@ -269,12 +342,9 @@ func (m *Module) Revert(of Task, mergeSHA, reason string) (Task, error) {
 
 // Tick advances every task that isn't already being worked on.
 func (m *Module) Tick() {
-	for _, t := range m.List(func(t Task) bool { return !t.Terminal() || t.IssueOpen }) {
-		if time.Now().Before(t.Retry) {
-			continue
-		}
+	for _, t := range m.List(func(t Task) bool { return !t.Terminal() || t.IssueOpen || m.woke(t) }) {
 		m.mu.Lock()
-		if m.busy[t.ID] {
+		if !m.due(t) || m.busy[t.ID] {
 			m.mu.Unlock()
 			continue
 		}
@@ -282,20 +352,86 @@ func (m *Module) Tick() {
 		m.mu.Unlock()
 		go func(t Task) {
 			defer func() { m.mu.Lock(); delete(m.busy, t.ID); m.mu.Unlock() }()
-			if err := m.step(&t); err != nil {
-				t.Failures++
-				t.Retry = time.Now().Add(time.Duration(min(t.Failures, 6)) * 30 * time.Second)
-				msg := err.Error()
-				if t.Failures >= 8 {
-					t.Stage, t.Reason = StageStopped, "gave up after repeated errors: "+msg
-					m.save(&t, t.Reason)
-					m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("Stopped %q: %s", t.Label(), core.Clip(msg, 300)))
-					return
-				}
-				m.save(&t, "error (will retry): "+core.Clip(msg, 300))
-			}
+			m.settle(&t, m.step(&t))
 		}(t)
 	}
+}
+
+// due reports whether a task's retry gap is over; a task saved before the
+// forge came back goes at once. The caller holds m.mu.
+func (m *Module) due(t Task) bool {
+	return !time.Now().Before(t.Retry) || !t.Updated.After(m.online)
+}
+
+// settle records how a step ended.
+func (m *Module) settle(t *Task, err error) {
+	why := ""
+	if err != nil {
+		why = core.Unreachable("GitHub", err.Error())
+	}
+	// Many steps succeed without touching GitHub, so only a direct check says
+	// it's back, and the tasks share one check at a time that backs off as
+	// they do. Any answer but a network failure counts as back.
+	m.mu.Lock()
+	probe := err == nil && m.offline != "" && !m.probing && !time.Now().Before(m.probe)
+	downs := m.downs
+	if probe {
+		m.probe, m.probing = time.Now().Add(backoff(m.downs)), true
+	}
+	m.mu.Unlock()
+	cwhy := ""
+	if probe {
+		if _, cerr := m.C.Effects.Forge.User(); cerr != nil {
+			cwhy = core.Unreachable("GitHub", cerr.Error())
+		}
+	}
+	m.mu.Lock()
+	if probe {
+		m.probing = false
+	}
+	switch {
+	case why != "":
+		m.offline = why
+		m.downs++
+	case probe && cwhy != "":
+		m.offline = cwhy
+		m.downs++
+	case probe && m.downs == downs: // no step failed while it was out
+		m.offline, m.downs, m.probe, m.online = "", 0, time.Time{}, time.Now().UTC()
+	}
+	downs = m.downs
+	m.mu.Unlock()
+	if err == nil {
+		return
+	}
+	if why != "" {
+		// An outage isn't the task's fault, so it waits it out without counting
+		// a failure, checking back less often the longer it lasts.
+		t.Retry = time.Now().Add(backoff(downs))
+		m.save(t, why+"; retrying")
+		return
+	}
+	t.Failures++
+	t.Retry = time.Now().Add(time.Duration(min(t.Failures, 6)) * 30 * time.Second)
+	msg := err.Error()
+	if t.Failures >= 8 {
+		m.giveUp(t, "gave up after repeated errors: "+msg)
+		return
+	}
+	m.save(t, "error (will retry): "+core.Clip(msg, 300))
+}
+
+// backoff is the gap after the nth failed step of an outage: 30s doubling to
+// a 10 minute ceiling.
+func backoff(n int) time.Duration {
+	return min(30*time.Second<<min(max(n, 1)-1, 5), 10*time.Minute)
+}
+
+// Offline says why the forge can't be reached, or "" when it can.
+func (m *Module) Offline() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.offline
 }
 
 func (m *Module) project(t *Task) (core.Project, error) {
@@ -349,6 +485,9 @@ func (m *Module) step(t *Task) error {
 		return m.prepareRevert(t, p)
 	case StagePerson:
 		// waiting on the person's answer (onPersonMerge)
+	case StageBlocked: // woke: an answer reopened its worker
+		t.Stage, t.Reason = StageWorking, ""
+		m.save(t, "the worker was woken with an answer")
 	}
 	return nil
 }
@@ -497,9 +636,11 @@ func (m *Module) checkWorker(t *Task, p core.Project) error {
 	case core.StatusBlocked:
 		t.Stage, t.Reason = StageBlocked, finishText(r)
 		m.save(t, "blocked: "+core.Clip(t.Reason, 300))
-		m.C.Effects.Forge.Comment(p.Repo, t.Issue.Number, "The worker stopped:\n\n"+t.Reason)
+		if t.Issue.Number != 0 {
+			m.C.Effects.Forge.Comment(p.Repo, t.Issue.Number, "The worker stopped:\n\n"+t.Reason)
+		}
 		m.C.J.MustAppend("kb.note", map[string]string{"title": "Blocked: " + t.Label(), "text": t.Reason, "project": t.Project, "run": r.ID})
-		m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("Blocked: %q. %s", t.Label(), core.Clip(t.Reason, 400)))
+		m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("Blocked: %q (task %s). %s", t.Label(), strings.TrimSpace(t.ID+" "+t.PR.URL), core.Clip(t.Reason, 400)))
 	case core.StatusStopped:
 		t.Stage, t.Reason = StageStopped, "worker stopped: "+r.Reason
 		m.save(t, t.Reason)
@@ -540,7 +681,10 @@ func (m *Module) land(t *Task, p core.Project) error {
 	if err := m.C.Effects.Push(p, t.Branch, sha); err != nil {
 		return err
 	}
-	body := finishText(r) + fmt.Sprintf("\n\nCloses #%d\n\n%s", t.Issue.Number, marker(t.ID))
+	body := finishText(r) + "\n\n" + marker(t.ID)
+	if t.Issue.Number != 0 {
+		body = finishText(r) + fmt.Sprintf("\n\nCloses #%d\n\n%s", t.Issue.Number, marker(t.ID))
+	}
 	pr, err := m.C.Effects.Forge.CreatePR(p.Repo, t.Branch, p.Branch, t.Label(), body)
 	if err != nil {
 		return err
@@ -548,14 +692,22 @@ func (m *Module) land(t *Task, p core.Project) error {
 	if t.PR.Number != 0 && t.SHA != sha {
 		m.C.Effects.Forge.Comment(p.Repo, pr.Number, fmt.Sprintf("New commit %s after round %d.", core.Short(sha), t.Round))
 	}
-	t.PR, t.SHA, t.Stage, t.Failures = pr, sha, StageTesting, 0
+	// A worker that finishes again on the same commit thinks something outside
+	// it changed (a tool installed, an answer), so its tests run again.
+	t.PR, t.Recheck, t.SHA, t.Stage, t.Failures = pr, t.SHA == sha, sha, StageTesting, 0
 	m.save(t, fmt.Sprintf("pushed %s, PR #%d", core.Short(sha), pr.Number))
 	return nil
 }
 
-// noCommits ends a task whose worker made no commit. An ask whose whole job
-// was a step outside the checkout is done; anything else is blocked.
+// noCommits ends a task whose worker made no commit. A helper's task is done, since its account already went to the agent that spawned it.
+// An ask whose whole job was a step outside the checkout is done; anything else
+// is blocked.
 func (m *Module) noCommits(t *Task, p core.Project, r core.Run) {
+	if t.Kind == "helper" {
+		t.Stage = StageDone
+		m.save(t, "the helper made no commits, so nothing to land")
+		return
+	}
 	var steps string
 	var ok bool
 	if m.Steps != nil {
@@ -602,11 +754,11 @@ func (m *Module) test(t *Task, p core.Project) error {
 	}
 	cfg := m.C.Effects.Config(p, main)
 	c, ok := m.C.Effects.GetCheck(p.Name, t.SHA, "test")
-	if !ok {
+	if !ok || t.Recheck {
 		if _, err := m.C.Sandbox(); err != nil {
 			return err
 		}
-		c = m.C.Effects.RunCheck(p, t.SHA, "test", cfg.Test)
+		c, t.Recheck = m.C.Effects.RunCheck(p, t.SHA, "test", cfg.Test), false
 		m.C.Effects.Forge.Comment(p.Repo, t.PR.Number, fmt.Sprintf("Tests on %s: **%s**\n\n```\n%s\n```", core.Short(t.SHA), passFail(c.OK), core.Clip(c.Output, 1500)))
 	}
 	if !c.OK {
@@ -774,8 +926,7 @@ func (m *Module) review(t *Task, p core.Project) error {
 	if err := json.Unmarshal(r.Structured, &v); err != nil || (v.Verdict != "land" && v.Verdict != "fix") || (v.Verdict == "land" && tok.Token != reviewToken(r.ID)) {
 		t.Reviews++
 		if t.Reviews >= 3 {
-			t.Stage, t.Reason = StageStopped, "the reviewer gave no usable verdict three times"
-			m.save(t, t.Reason)
+			m.giveUp(t, "the reviewer gave no usable verdict three times")
 			return nil
 		}
 		m.save(t, "reviewer gave no usable verdict (a land must carry the token from its brief.md); asking again")
@@ -820,10 +971,8 @@ func (m *Module) sendBack(t *Task, p core.Project, findings string) error {
 		reason = fmt.Sprintf("stopped after %d rounds of fixes; what remains:\n\n%s", t.Round, core.Clip(findings, 1500))
 	}
 	if reason != "" {
-		t.Stage, t.Reason = StageStopped, reason
-		m.save(t, "stopped: nothing more to send back")
+		m.giveUp(t, reason)
 		m.C.Effects.Forge.Comment(p.Repo, t.PR.Number, "Stopping here. "+t.Reason+"\n\nThe pull request stays open.")
-		m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("Stopped %q; the PR stays open: %s", t.Label(), t.PR.URL))
 		return nil
 	}
 	t.Round++
@@ -870,8 +1019,7 @@ func (m *Module) merge(t *Task, p core.Project) error {
 func (m *Module) conflict(t *Task, p core.Project) error {
 	t.Conflicts++
 	if t.Conflicts > 3 {
-		t.Stage, t.Reason = StageStopped, "keeps conflicting with main"
-		m.save(t, t.Reason)
+		m.giveUp(t, "keeps conflicting with main")
 		m.C.Effects.Forge.Comment(p.Repo, t.PR.Number, "Stopping: the branch keeps conflicting with main. The pull request stays open.")
 		return nil
 	}
@@ -930,7 +1078,7 @@ func (m *Module) onPersonMerge(a core.Ask) {
 		m.save(&t, "the person approved")
 		return
 	}
-	t.Stage, t.Reason = StageStopped, strings.TrimSuffix("left open: "+a.Note, ": ")
+	t.Stage, t.Reason, t.ByPerson = StageStopped, strings.TrimSuffix("left open: "+a.Note, ": "), true
 	m.save(&t, t.Reason)
 	m.Chat.Notify(t.Chat, t.Thread, fmt.Sprintf("%q was %s: %s", t.Label(), t.Reason, t.PR.URL))
 }
@@ -944,9 +1092,71 @@ func (m *Module) Stop(id, reason string) error {
 	if t.Worker != "" {
 		m.C.Runs.Stop(t.Worker, reason)
 	}
-	t.Stage, t.Reason = StageStopped, reason
+	t.Stage, t.Reason, t.ByPerson = StageStopped, reason, true
 	m.save(&t, "stopped: "+reason)
 	return nil
+}
+
+// giveUp stops a task the pipeline can't take further and hands it to the
+// lead, which brings it back with recheck or leaves it; no count ends it for good.
+func (m *Module) giveUp(t *Task, reason string) {
+	t.Stage, t.Reason = StageStopped, reason
+	m.save(t, core.Clip(reason, 300))
+	m.Chat.ToLead(t.Chat, t.Thread, fmt.Sprintf("Stopped %q (task %s): %s\n\nIt's yours: bring it back with recheck, or leave it.", t.Label(), strings.TrimSpace(t.ID+" "+t.PR.URL), core.Clip(reason, 1500)))
+}
+
+// woke reports whether a blocked task's worker is taking turns again.
+func (m *Module) woke(t Task) bool {
+	if t.Stage != StageBlocked || t.Worker == "" {
+		return false
+	}
+	r, ok := m.C.Runs.Get(t.Worker)
+	return ok && !r.Terminal()
+}
+
+// Recheck brings a blocked or stopped task back with fresh counts: with no
+// text its commits are pushed and checked again (what blocked it may be fixed
+// now); with text its worker gets that and works on in the same checkout. A
+// task the person stopped or left open stays theirs to bring back.
+func (m *Module) Recheck(id, back string) error {
+	t, ok := m.Get(id)
+	if !ok {
+		return core.ErrNotFound
+	}
+	if t.Stage != StageBlocked && t.Stage != StageStopped {
+		return fmt.Errorf("task %s is %s, not blocked or stopped", id, t.Stage)
+	}
+	if t.ByPerson {
+		return fmt.Errorf("task %s was stopped by the person (%s); only they can bring it back", id, t.Reason)
+	}
+	t.Reason, t.Failures, t.Round, t.Reviews, t.Conflicts = "", 0, 0, 0, 0
+	if back != "" {
+		if err := m.C.Runs.Reopen(t.Worker, back); err != nil {
+			return err
+		}
+		t.Stage = StageWorking
+		m.save(&t, "sent back to its worker: "+core.Clip(back, 200))
+		return nil
+	}
+	t.Stage = StageLanding
+	m.save(&t, "checks run again on its commits")
+	return nil
+}
+
+func (m *Module) opRecheck(r core.Run, args json.RawMessage) (any, error) {
+	var a struct{ Task, Back string }
+	if err := core.Bind(args, &a); err != nil {
+		return nil, err
+	}
+	if t, ok := m.Get(a.Task); ok {
+		if err := m.C.Runs.Walled(r, t.Project); err != nil {
+			return nil, err
+		}
+	}
+	if err := m.Recheck(a.Task, a.Back); err != nil {
+		return nil, err
+	}
+	return map[string]string{"task": a.Task, "note": "back in the pipeline; you'll be told the outcome"}, nil
 }
 
 // Retry hands a blocked or stopped task to a fresh worker on the same branch

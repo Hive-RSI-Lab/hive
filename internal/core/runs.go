@@ -79,6 +79,7 @@ type Run struct {
 	Pending     []string        `json:"pending,omitempty"`
 	ParkedUntil time.Time       `json:"parked_until,omitempty"`
 	Retries     int             `json:"retries"`
+	Offline     string          `json:"offline,omitempty"` // its last turn couldn't reach its service, and why
 	Nudges      int             `json:"nudges"`
 	Login       string          `json:"login,omitempty"` // the login its latest turn went on
 	Progress    string          `json:"progress,omitempty"`
@@ -104,7 +105,10 @@ func (r *Run) Terminal() bool {
 func (ws Workspace) RunHost(id string) string { return filepath.Join(ws.Run(id), "host") }
 func (ws Workspace) RunRO(id string) string   { return filepath.Join(ws.Run(id), "ro") }
 func (ws Workspace) RunBox(id string) string  { return filepath.Join(ws.Run(id), "box") }
-func (ws Workspace) RunHome(id string) string { return filepath.Join(ws.Run(id), "home") }
+func (ws Workspace) RunHome(id string) string { return filepath.Join(ws.RunPrivate(id), "home") }
+
+// RunPrivate holds what of a run grants access: its home and CODEX_HOME.
+func (ws Workspace) RunPrivate(id string) string { return filepath.Join(ws.Private(), "runs", id) }
 
 // TurnOut is the streamed output of one turn.
 func (ws Workspace) TurnOut(id string, turn int) string {
@@ -146,6 +150,10 @@ type Runs struct {
 	tokens  TokenSource
 	tools   func() []string // host programs to expose (hive binary for the sandbox's OS)
 	ops     *Ops
+	projs   *Projects // for which projects' records to hide; nil hides none
+	// ModelFor is the model a persistent run's next turn takes, so a lead
+	// follows a changed setting; empty keeps the run's own.
+	ModelFor func(Run) string
 
 	mu    sync.Mutex
 	runs  map[string]*Run
@@ -154,38 +162,129 @@ type Runs struct {
 	spent map[string]float64 // "2006-01" (UTC) -> what runs cost that month
 }
 
+// codexTokenStuck opens the note on a run whose Codex token folder would not delete.
+const codexTokenStuck = "its Codex token could not be deleted: "
+
 // NewRuns builds the run manager and replays its records.
 func NewRuns(ws Workspace, j *Journal, sb func() (sandbox.Sandbox, error), tokens TokenSource, tools func() []string) *Runs {
 	rs := &Runs{ws: ws, j: j, sandbox: sb, tokens: tokens, tools: tools, runs: map[string]*Run{}, plans: map[string]Plan{}, busy: map[string]bool{}, spent: map[string]float64{}}
 	rs.ops = NewOps(rs)
 	_ = j.Replay(rs.apply)
-	// A crash between writing a turn's token and starting the turn left it behind.
-	stuck := map[string]error{}
-	for _, r := range rs.runs {
-		if HarnessName(r.Harness) == "codex" && r.Status != StatusRunning {
-			if err := rs.dropCodexHome(r.ID); err != nil {
-				stuck[r.ID] = err
-			}
-		}
-	}
 	j.Subscribe(func(e Event) {
 		rs.mu.Lock()
 		rs.apply(e)
 		rs.mu.Unlock()
 	})
-	for id, err := range stuck {
-		why := "its Codex token could not be deleted: " + err.Error()
-		r, _ := rs.Get(id)
-		switch {
-		case r.Status == StatusBlocked && strings.HasPrefix(r.Reason, "its Codex token could not be deleted"):
-			// already said; a restart adds nothing
-		case r.Terminal():
-			rs.Progress(id, why) // a finished run keeps its status
-		default:
-			rs.SetStatus(id, StatusBlocked, why)
+	return rs
+}
+
+// Migrate is the daemon's start-up sweep of what grants access, run once
+// before it publishes its token. Versions before .hive/private kept each run's
+// home and Codex home in the readable runs/<id>/, the turn specs (carrying the
+// turn's token) beside the turn's output, and daemon.json in .hive; those move
+// under Private or go. A turn the earlier daemon started mounts .hive with no
+// cover over private/, so every live turn is ended and waited out first (as
+// Stop ends one) and nothing moves while one is alive. A Codex token a crash
+// left between writing it and the turn's start goes too. An error names what
+// is still readable; the daemon does not start agents until it is gone.
+func (rs *Runs) Migrate() error {
+	// Any old-layout path means an earlier daemon ran here, so its turns
+	// may still be alive with no cover over private/.
+	if old := rs.legacyPaths(); len(old) > 0 {
+		if err := rs.endOldTurns(); err != nil {
+			return err
+		}
+		for from, to := range old {
+			if err := move(from, to); err != nil {
+				return fmt.Errorf("%s is still readable to every agent: %w", from, err)
+			}
 		}
 	}
-	return rs
+	// A token that cannot be deleted is reported on its run, not dropped.
+	for _, r := range rs.List(nil) {
+		if HarnessName(r.Harness) != "codex" || r.Status == StatusRunning {
+			continue
+		}
+		if err := rs.dropCodexHome(r.ID); err != nil {
+			why := codexTokenStuck + err.Error()
+			switch {
+			case r.Status == StatusBlocked && strings.HasPrefix(r.Reason, codexTokenStuck):
+				// already blocked for it; a restart adds nothing
+			case r.Terminal(): // Terminal counts a blocked run too
+				// a finished or already blocked run keeps its status and reason,
+				// and gets the note once
+				if !strings.HasPrefix(r.Progress, codexTokenStuck) {
+					rs.Progress(r.ID, why)
+				}
+			default:
+				rs.SetStatus(r.ID, StatusBlocked, why)
+			}
+		}
+	}
+	return nil
+}
+
+// legacyPaths maps what an earlier version left in the readable tree to where
+// it goes under Private; "" means it goes. A Codex home whose place is taken
+// goes too: it is one turn's copy, and that turn has ended.
+func (rs *Runs) legacyPaths() map[string]string {
+	old := map[string]string{}
+	if p := filepath.Join(rs.ws.Hive(), "daemon.json"); Exists(p) {
+		old[p] = ""
+	}
+	dirs, _ := os.ReadDir(rs.ws.Runs())
+	for _, d := range dirs {
+		id, host := d.Name(), rs.ws.RunHost(d.Name())
+		for _, from := range []string{filepath.Join(rs.ws.Run(id), "home"), filepath.Join(host, "codex"), filepath.Join(host, "codex-sessions")} {
+			if !Exists(from) {
+				continue
+			}
+			to := filepath.Join(rs.ws.RunPrivate(id), filepath.Base(from))
+			if filepath.Base(from) == "codex" && Exists(to) {
+				to = ""
+			}
+			old[from] = to
+		}
+		specs, _ := filepath.Glob(filepath.Join(host, "*.sandbox.json"))
+		for _, f := range specs {
+			old[f] = ""
+		}
+	}
+	return old
+}
+
+// move renames from to to; a to that is taken keeps its place and from goes
+// beside it under a fresh name, so nothing is lost and nothing stays. "" removes from.
+func move(from, to string) error {
+	if to == "" {
+		return removeTree(from)
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		return err
+	}
+	if Exists(to) {
+		id := NewID() // its random tail, not the date, keeps the name fresh
+		to += ".old-" + id[strings.LastIndex(id, "-")+1:]
+	}
+	return os.Rename(from, to)
+}
+
+// endOldTurns ends every turn alive from before this start and waits for it
+// to go, as Stop does: a terminate, then a kill.
+func (rs *Runs) endOldTurns() error {
+	for _, r := range rs.List(func(r *Run) bool { return r.Status == StatusRunning && proc.Alive(r.Proc) }) {
+		proc.Terminate(r.Proc)
+		for i := 0; proc.Alive(r.Proc); i++ {
+			switch i {
+			case 50:
+				proc.Kill(r.Proc)
+			case 100:
+				return fmt.Errorf("run %s's turn from before the update is still running (pid %d)", r.ID, r.Proc.PID)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return nil
 }
 
 // Ops returns the mailbox operation registry.
@@ -198,6 +297,7 @@ type turnStarted struct {
 	Proc      proc.Handle `json:"proc"`
 	Delivered int         `json:"delivered"`
 	Resume    bool        `json:"resume"`
+	Model     string      `json:"model,omitempty"`
 	Login     string      `json:"login,omitempty"`
 }
 
@@ -211,6 +311,7 @@ type turnEnded struct {
 	Reason      string          `json:"reason,omitempty"`
 	ParkedUntil time.Time       `json:"parked_until,omitempty"`
 	Queue       []string        `json:"queue,omitempty"`
+	Offline     string          `json:"offline,omitempty"` // why the harness couldn't reach its service, in one plain line
 }
 
 // egressRefused is the hosts a turn's egress proxy refused.
@@ -263,6 +364,9 @@ func (rs *Runs) apply(e Event) {
 		if t.Session != "" {
 			r.Session = t.Session
 		}
+		if t.Model != "" {
+			r.Model = t.Model
+		}
 		r.Waiting = ""
 		if t.Delivered <= len(r.Pending) {
 			r.Pending = r.Pending[t.Delivered:]
@@ -275,7 +379,7 @@ func (rs *Runs) apply(e Event) {
 		if t.Session != "" {
 			r.Session = t.Session
 		}
-		r.Status, r.Reason, r.ParkedUntil = t.Status, t.Reason, t.ParkedUntil
+		r.Status, r.Reason, r.ParkedUntil, r.Offline = t.Status, t.Reason, t.ParkedUntil, t.Offline
 		r.Proc = proc.Handle{}
 		if t.Result != nil {
 			r.Cost += t.Result.CostUSD
@@ -692,7 +796,7 @@ func (rs *Runs) endTurn(r Run) {
 	cur, _ := rs.Get(r.ID)
 	switch {
 	case dropErr != nil:
-		te.Status, te.Reason = StatusBlocked, "its Codex token could not be deleted: "+dropErr.Error()
+		te.Status, te.Reason = StatusBlocked, codexTokenStuck+dropErr.Error()
 	case cur.StopAsked:
 		te.Status, te.Reason = StatusStopped, "stopped by the Hive"
 	case limited:
@@ -706,7 +810,10 @@ func (rs *Runs) endTurn(r Run) {
 			te.Queue = []string{"Your last turn hit a usage limit, so your next turn runs on another login. Continue where you left off."}
 		}
 	case tl.Result == nil:
-		errTail := tail(rs.ws.TurnOut(r.ID, r.Turn)+".err", 400)
+		// Under WSL, sandbox-exec's own early failures go to .wsl.
+		out := rs.ws.TurnOut(r.ID, r.Turn)
+		errTail := strings.TrimSpace(tail(out+".err", 400) + "\n" + tail(out+".wsl", 400))
+		te.Offline = Unreachable(service(r.Harness), errTail)
 		te.Status, te.ParkedUntil = StatusParked, time.Now().Add(backoff(cur.Retries))
 		te.Reason = "interrupted; retrying on its checkout" + suffix(errTail)
 		te.Queue = []string{"Your previous turn was interrupted. Your checkout and commits are intact. Continue where you left off."}
@@ -715,6 +822,7 @@ func (rs *Runs) endTurn(r Run) {
 	case tl.Result.IsError:
 		te.Status, te.ParkedUntil = StatusParked, time.Now().Add(backoff(cur.Retries))
 		te.Reason = "harness error; retrying" + suffix(Clip(tl.Result.Text, 200))
+		te.Offline = Unreachable(service(r.Harness), tl.Result.Text)
 		te.Queue = []string{"The previous turn hit an error (" + Clip(tl.Result.Text, 200) + "). Continue where you left off."}
 	case cur.Finish != nil:
 		te.Status = StatusDone
@@ -733,12 +841,26 @@ func (rs *Runs) endTurn(r Run) {
 	default:
 		te.Status, te.Reason = StatusQuiet, "keeps ending turns without finishing; flagged for the lead"
 	}
+	if te.Offline != "" {
+		// Retrying costs no usage while it's down, so it checks back every few minutes at most.
+		te.Reason = te.Offline + "; retrying"
+		te.ParkedUntil = time.Now().Add(min(backoff(cur.Retries), 5*time.Minute))
+	}
 	rs.append("run.turn_ended", te)
+	// A message that came in while it finished blocked (often the answer it was
+	// blocked on) wakes it rather than waiting on a run that takes no turns.
+	if te.Status == StatusBlocked && len(cur.Pending) > 0 {
+		rs.append("run.reopened", runNote{ID: r.ID})
+		rs.append("run.status", runNote{ID: r.ID, Status: StatusIdle, Reason: "woken by a message"})
+	}
 	// A spawned helper's account goes back to the agent that spawned it.
 	if (te.Status == StatusDone || te.Status == StatusBlocked) && r.Parent != "" {
 		account := cur.Result
 		if cur.Finish != nil {
 			account = fmt.Sprintf("status: %s\n%s\ntested: %s\nunsure: %s", cur.Finish.Status, cur.Finish.Account, cur.Finish.Tested, cur.Finish.Unsure)
+		}
+		if r.Task != "" && te.Status == StatusDone {
+			account += "\nwhere its commits go: their own pull request, task " + r.Task + "; the thread hears when it merges"
 		}
 		if p, ok := rs.Get(r.Parent); ok && (!p.Terminal() || p.Persistent) {
 			rs.Send(p.ID, fmt.Sprintf("[%s %s finished]\n%s", r.Role, r.ID, account))
@@ -751,6 +873,32 @@ func suffix(s string) string {
 		return ""
 	}
 	return ": " + s
+}
+
+// Unreachable says in one plain line why service couldn't be reached, read
+// from an error's text, or "" when the text isn't about reaching it.
+func Unreachable(service, text string) string {
+	t := strings.ToLower(text)
+	has := func(words ...string) bool {
+		return slices.ContainsFunc(words, func(w string) bool { return strings.Contains(t, w) })
+	}
+	switch {
+	case has("token has expired", "/login", "auth login", "not logged in", "invalid api key", "authentication_error", "bad credentials"):
+		return service + " login expired"
+	case has("enotfound", "eai_again", "getaddrinfo", "no such host", "could not resolve", "network is unreachable", "enetunreach"):
+		return "can't reach " + service + ": no internet connection"
+	case has("connection error", "error connecting", "error sending request", "stream disconnected", "econnrefused", "econnreset", "etimedout", "connection refused", "connection reset", "i/o timeout"):
+		return "can't reach " + service + ": the connection failed"
+	}
+	return ""
+}
+
+// service names what a harness talks to.
+func service(h string) string {
+	if HarnessName(h) == "codex" {
+		return "Codex"
+	}
+	return "Claude"
 }
 
 func backoff(n int) time.Duration {
@@ -816,6 +964,11 @@ func (rs *Runs) launch(r Run, cfg Config) {
 		prompt = "Continue."
 	}
 	r.Session = session
+	if rs.ModelFor != nil && r.Persistent {
+		if m := rs.ModelFor(r); m != "" {
+			r.Model = m
+		}
+	}
 	promptFile := filepath.Join(rs.ws.RunHost(r.ID), fmt.Sprintf("turn-%03d.prompt", turn))
 	if err := os.WriteFile(promptFile, []byte(prompt), 0o644); err != nil {
 		rs.append("run.status", runNote{ID: r.ID, Status: StatusParked, Reason: err.Error(), Until: time.Now().Add(time.Minute)})
@@ -853,7 +1006,7 @@ func (rs *Runs) launch(r Run, cfg Config) {
 		return
 	}
 	started = true
-	rs.append("run.turn_started", turnStarted{ID: r.ID, Session: session, Turn: turn, Proc: p, Delivered: delivered, Resume: resume, Login: login.Key()})
+	rs.append("run.turn_started", turnStarted{ID: r.ID, Session: session, Turn: turn, Proc: p, Delivered: delivered, Resume: resume, Login: login.Key(), Model: r.Model})
 }
 
 // RunPath is where a run's agent sees its run dir ($HIVE_RUN).
@@ -879,16 +1032,18 @@ func (rs *Runs) sandboxSpec(cfg Config, sb sandbox.Sandbox, h harness.Harness, r
 	if !r.Isolated {
 		mounts = append(mounts, sandbox.Mount{Host: rs.ws.Projects(), Inside: "/hive/projects"},
 			sandbox.Mount{Host: rs.ws.Hive(), Inside: "/hive/state"})
-		// Every agent reads the whole Hive but what grants access: the daemon's
-		// API token and the login pool's stored logins.
-		logins := filepath.Join(rs.ws.Hive(), "logins")
-		os.MkdirAll(logins, 0o700) // a login added mid-turn lands under the cover
-		mounts = append(mounts, sandbox.Mount{Host: logins, Inside: "/hive/state/logins", Hide: true})
-		if _, err := os.Stat(rs.ws.DaemonFile()); err == nil {
-			mounts = append(mounts, sandbox.Mount{Host: rs.ws.DaemonFile(), Inside: "/hive/state/daemon.json", Hide: true})
+		// Every agent reads the whole Hive but what grants access: the login
+		// pool's stored logins, module programs' homes and logs (where a door
+		// module keeps its own service login), and Private (the daemon's token,
+		// every run's home and CODEX_HOME). All are folders, so what lands in
+		// them mid-turn lands under the cover.
+		for _, d := range []string{filepath.Join(rs.ws.Hive(), "logins"), filepath.Join(rs.ws.Hive(), "modules"), rs.ws.Private()} {
+			os.MkdirAll(d, 0o700)
+			mounts = append(mounts, sandbox.Mount{Host: d, Inside: "/hive/state/" + filepath.Base(d), Hide: true})
 		}
 	}
 	mounts = append(mounts, sandbox.Mount{Host: rs.ws.Tools(), Inside: sandbox.ToolsInside})
+	mounts = append(mounts, rs.hideIsolated(r)...)
 	if r.Isolated && sb.Isolated() {
 		// Only granted modules are visible: mount each over an empty modules dir,
 		// which holds their mount points, since bwrap can't make them inside a
@@ -959,6 +1114,83 @@ func (rs *Runs) sandboxSpec(cfg Config, sb sandbox.Sandbox, h harness.Harness, r
 	}, nil
 }
 
+// Walled refuses r reaching project when either side is an isolated project:
+// an isolated project is reached only from its own runs, and its runs reach
+// no other project. Both come from the core's record of r, never from r.
+func (rs *Runs) Walled(r Run, project string) error {
+	if project == r.Project || rs.projs == nil {
+		return nil
+	}
+	for _, name := range []string{project, r.Project} {
+		if p, ok := rs.projs.Get(name); ok && p.Isolated {
+			return fmt.Errorf("project %q is out of reach of %s's agents", project, r.Project)
+		}
+	}
+	return nil
+}
+
+// hideIsolated covers what isolated projects other than r's own leave in the
+// shared Hive, so r reads none of their code, runs, chats, notes, checks or
+// scores. An isolated run sees only the knowledge base of what is shared, so
+// it gets just the notes covered. The journal holds every project's events in
+// one file, so it is covered whole while any project is isolated. The folders
+// are made first so what lands in them mid-turn is covered too; a run or chat
+// started mid-turn is not, until that agent's next turn.
+func (rs *Runs) hideIsolated(r Run) []sandbox.Mount {
+	if rs.projs == nil {
+		return nil
+	}
+	iso := map[string]bool{}
+	var out []sandbox.Mount
+	var rel []string
+	for _, p := range rs.projs.List() {
+		if !p.Isolated || p.Name == r.Project {
+			continue
+		}
+		iso[p.Name] = true
+		kb := filepath.Join(rs.ws.KB(), "isolated", p.Name)
+		rs.ws.IsolatedKB(p.Name) // never made through a link
+		out = append(out, sandbox.Mount{Host: kb, Inside: "/hive/kb/isolated/" + p.Name, Hide: true})
+		if r.Isolated {
+			continue
+		}
+		if Exists(rs.ws.Project(p.Name)) { // no clone yet: nothing to hide, and no mount point
+			out = append(out, sandbox.Mount{Host: rs.ws.Project(p.Name), Inside: "/hive/projects/" + p.Name, Hide: true})
+		}
+		for _, d := range []string{"checks", "gates", "risk"} {
+			os.MkdirAll(filepath.Join(rs.ws.Hive(), d, p.Name), 0o755)
+			rel = append(rel, d+"/"+p.Name)
+		}
+		rel = append(rel, "kb/isolated/"+p.Name, "scores/"+p.Name+".jsonl", "chats/project_"+p.Name+".jsonl")
+	}
+	if len(iso) > 0 { // the kb's record is filed from the journal, so it is covered whole too
+		rec := filepath.Join(rs.ws.KB(), "record")
+		os.MkdirAll(rec, 0o755)
+		out = append(out, sandbox.Mount{Host: rec, Inside: "/hive/kb/record", Hide: true})
+		if !r.Isolated {
+			rel = append(rel, "kb/record")
+		}
+	}
+	if len(iso) == 0 || r.Isolated {
+		return out
+	}
+	rel = append(rel, "events.jsonl")
+	rs.mu.Lock()
+	for id, x := range rs.runs {
+		if iso[x.Project] {
+			rel = append(rel, "runs/"+id, "chats/agent_"+id+".jsonl", "scratch/"+id)
+		}
+	}
+	rs.mu.Unlock()
+	for _, f := range rel {
+		host := filepath.Join(rs.ws.Hive(), filepath.FromSlash(f))
+		if Exists(host) {
+			out = append(out, sandbox.Mount{Host: host, Inside: "/hive/state/" + f, Hide: true})
+		}
+	}
+	return out
+}
+
 // freshCodexHome makes the turn's CODEX_HOME: a new folder on the host side
 // the agent never had, so nothing it planted can steer the host's writes.
 // Only the sessions from earlier turns, which resume needs, move into it.
@@ -968,11 +1200,11 @@ func (rs *Runs) freshCodexHome(r Run) (string, error) {
 	if err := rs.dropCodexHome(r.ID); err != nil {
 		return "", err
 	}
-	dir := filepath.Join(rs.ws.RunHost(r.ID), "codex")
+	dir := filepath.Join(rs.ws.RunPrivate(r.ID), "codex")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return "", err
 	}
-	os.Rename(filepath.Join(rs.ws.RunHost(r.ID), "codex-sessions"), filepath.Join(dir, "sessions"))
+	os.Rename(filepath.Join(rs.ws.RunPrivate(r.ID), "codex-sessions"), filepath.Join(dir, "sessions"))
 	if r.System == "" {
 		return dir, nil
 	}
@@ -986,8 +1218,14 @@ func (rs *Runs) freshCodexHome(r Run) (string, error) {
 // keeping only its sessions for the next turn's resume. Folders the agent
 // locked are opened first; links are never followed.
 func (rs *Runs) dropCodexHome(id string) error {
-	dir := filepath.Join(rs.ws.RunHost(id), "codex")
-	os.Rename(filepath.Join(dir, "sessions"), filepath.Join(rs.ws.RunHost(id), "codex-sessions"))
+	dir := filepath.Join(rs.ws.RunPrivate(id), "codex")
+	os.Rename(filepath.Join(dir, "sessions"), filepath.Join(rs.ws.RunPrivate(id), "codex-sessions"))
+	return removeTree(dir)
+}
+
+// removeTree deletes a folder an agent may have locked, opening it first;
+// links are never followed.
+func removeTree(dir string) error {
 	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
 			os.Chmod(p, 0o700)
