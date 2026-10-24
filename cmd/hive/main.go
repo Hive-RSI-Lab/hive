@@ -20,6 +20,7 @@ import (
 	"github.com/ihsan-sa/hive-standalone-build/internal/fakeagent"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/chat"
 	"github.com/ihsan-sa/hive-standalone-build/internal/mod/kb"
+	"github.com/ihsan-sa/hive-standalone-build/internal/mod/tools"
 	"github.com/ihsan-sa/hive-standalone-build/internal/sandbox"
 	"github.com/ihsan-sa/hive-standalone-build/internal/setup"
 	"github.com/ihsan-sa/hive-standalone-build/internal/tui"
@@ -73,6 +74,17 @@ func run(args []string) int {
 			return 2
 		}
 		return sandbox.Init(args[0])
+	case "tools-fetch":
+		if len(args) < 2 || len(args) > 3 {
+			return 2
+		}
+		v, err := tools.Fetch(args[0], args[1], strings.Join(args[2:], ""))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Println(v)
+		return 0
 	case "sandbox-inner":
 		return sandbox.Inner(args)
 	case "sandbox-probe":
@@ -449,6 +461,11 @@ func cmdDoctor(args []string) int {
 		fmt.Printf("✗ %v\n", err)
 	} else if msg != "" {
 		fmt.Println("✓ " + msg)
+	}
+	if got := tools.Installed(ws.Tools()); len(got) > 0 {
+		fmt.Println("✓ tools agents installed: " + strings.Join(got, ", "))
+	} else {
+		fmt.Println("· no tools installed yet (agents install python, uv, node and go themselves)")
 	}
 	if setup.AutostartEnabled() {
 		fmt.Println("✓ starts with the machine")
