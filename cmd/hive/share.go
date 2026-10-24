@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -141,14 +141,23 @@ func bundleRef(body []byte) string {
 	return strings.TrimSpace(string(body))
 }
 
+// loginDirs are the old places of a run's login tokens, which never leave.
+var loginDirs = []string{"runs/*/home", "runs/*/host/codex*"}
+
 // shareParts finds every regular file of the shared set and the runs.
 func shareParts(ws core.Workspace) []part {
 	var parts []part
 	add := func(p part) {
-		filepath.WalkDir(filepath.Join(ws.Hive(), filepath.FromSlash(p.name)), func(path string, d fs.DirEntry, err error) error {
+		filepath.WalkDir(filepath.Join(ws.Hive(), filepath.FromSlash(p.name)), func(file string, d fs.DirEntry, err error) error {
+			rel, _ := filepath.Rel(ws.Hive(), file)
+			rel = filepath.ToSlash(rel)
+			for _, pat := range loginDirs {
+				if ok, _ := path.Match(pat, rel); ok && d != nil && d.IsDir() {
+					return fs.SkipDir
+				}
+			}
 			if err == nil && d.Type().IsRegular() {
-				rel, _ := filepath.Rel(ws.Hive(), path)
-				p.files = append(p.files, filepath.ToSlash(rel))
+				p.files = append(p.files, rel)
 			}
 			return nil
 		})
@@ -169,15 +178,20 @@ func shareParts(ws core.Workspace) []part {
 }
 
 // writeBundle zips parts into w as .hive/..., setting each part's size, and
-// returns the zip's length. Files are read with SafeRead, since agents can
-// write under runs/.
+// returns the zip's length. Files are read with readNoFollow, since agents
+// can write under runs/.
 func writeBundle(w io.Writer, ws core.Workspace, parts []part) (int64, error) {
+	root, err := os.OpenRoot(ws.Hive())
+	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
 	cw := &countWriter{w: w}
 	zw := zip.NewWriter(cw)
 	for i := range parts {
 		start := cw.n
 		for _, rel := range parts[i].files {
-			data, err := core.SafeRead(filepath.Join(ws.Hive(), filepath.FromSlash(rel)), math.MaxInt64)
+			data, err := readNoFollow(root, rel)
 			if err != nil {
 				continue // gone or swapped since the walk
 			}
@@ -194,8 +208,53 @@ func writeBundle(w io.Writer, ws core.Workspace, parts []part) (int64, error) {
 		}
 		parts[i].size = cw.n - start
 	}
-	err := zw.Close()
+	err = zw.Close()
 	return cw.n, err
+}
+
+// readNoFollow reads the slash path rel under root one name at a time,
+// refusing any name that is a symlink or is swapped between its check and
+// its open, so a run that swaps a folder for a link mid-read never leads the
+// read anywhere else, in .hive or out of it.
+func readNoFollow(root *os.Root, rel string) ([]byte, error) {
+	names := strings.Split(rel, "/")
+	dir := root
+	defer func() {
+		if dir != root {
+			dir.Close()
+		}
+	}()
+	for _, name := range names[:len(names)-1] {
+		before, err := dir.Lstat(name)
+		if err != nil || !before.IsDir() {
+			return nil, errors.New("not a folder")
+		}
+		sub, err := dir.OpenRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		if dir != root {
+			dir.Close()
+		}
+		dir = sub
+		if after, err := dir.Stat("."); err != nil || !os.SameFile(before, after) {
+			return nil, errors.New("folder changed while reading")
+		}
+	}
+	name := names[len(names)-1]
+	before, err := dir.Lstat(name)
+	if err != nil || !before.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	f, err := dir.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if after, err := f.Stat(); err != nil || !os.SameFile(before, after) {
+		return nil, errors.New("file changed while reading")
+	}
+	return io.ReadAll(f)
 }
 
 func rewriteBundle(f *os.File, ws core.Workspace, parts []part) (int64, error) {

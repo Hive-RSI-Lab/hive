@@ -156,3 +156,75 @@ func TestShareNothingFitsSendsNothing(t *testing.T) {
 		t.Errorf("sent %d bundles", len(*got))
 	}
 }
+
+// A run's old login folders never leave, while the rest of its host folder does.
+func TestShareLeavesOutRunLogins(t *testing.T) {
+	ws := core.Workspace{Root: t.TempDir()}
+	for _, rel := range []string{"runs/r1/home/.claude/token", "runs/r1/host/codex/auth.json",
+		"runs/r1/host/codex-sessions/s.json", "runs/r1/host/turn-001.jsonl"} {
+		p := filepath.Join(ws.Hive(), filepath.FromSlash(rel))
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("x"), 0o600)
+	}
+	var buf bytes.Buffer
+	if _, err := writeBundle(&buf, ws, shareParts(ws)); err != nil {
+		t.Fatal(err)
+	}
+	if names := strings.Join(zipNames(t, buf.Bytes()), " "); names != ".hive/runs/r1/host/turn-001.jsonl" {
+		t.Errorf("zip holds %s, want only the turn log", names)
+	}
+}
+
+// A run that keeps swapping a folder of its box for a symlink, to a secret
+// outside .hive or to the logins inside it, never gets the secret into a zip.
+func TestShareNeverFollowsASwappedFolder(t *testing.T) {
+	ws := shareFixture(t)
+	box := ws.RunBox("r3")
+	mid := filepath.Join(box, "mid")
+	targets := []string{filepath.Join(t.TempDir(), "ssh"), filepath.Join(ws.Hive(), "logins", "fake")}
+	for _, d := range append([]string{mid}, targets...) {
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "id"), []byte("FAKE-SECRET"), 0o600)
+	}
+	os.WriteFile(filepath.Join(mid, "id"), []byte("plain"), 0o644)
+	links := []string{filepath.Join(box, "out"), filepath.Join(box, "in")}
+	for i, l := range links {
+		if err := os.Symlink(targets[i], l); err != nil {
+			t.Skip("no symlinks here:", err)
+		}
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			os.Rename(mid, filepath.Join(box, "real"))
+			os.Rename(links[i%2], mid) // the link takes the folder's place
+			os.Rename(mid, links[i%2])
+			os.Rename(filepath.Join(box, "real"), mid)
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	for i := 0; i < 300; i++ {
+		var buf bytes.Buffer
+		if _, err := writeBundle(&buf, ws, shareParts(ws)); err != nil {
+			t.Fatal(err)
+		}
+		zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range zr.File {
+			rc, _ := f.Open()
+			data, _ := io.ReadAll(rc)
+			rc.Close()
+			if bytes.Contains(data, []byte("FAKE-SECRET")) {
+				t.Fatalf("bundle %d holds the secret as %s", i, f.Name)
+			}
+		}
+	}
+}
