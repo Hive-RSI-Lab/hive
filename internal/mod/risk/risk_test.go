@@ -970,9 +970,9 @@ func TestModuleInstallRefusesAnIsolatedProject(t *testing.T) {
 }
 
 // A person's done on a merge they were asked about with no script settles it
-// yes; any other answer, including run with nothing to run, leaves it open.
+// yes and declined leaves it open; run, with nothing to run, isn't offered.
 func TestPersonDoneSettlesAScriptlessAsk(t *testing.T) {
-	for answer, want := range map[string]string{"done": "merge", "run": "leave open", "declined": "leave open", "maybe": "leave open"} {
+	for answer, want := range map[string]string{"done": "merge", "declined": "leave open", "run": ""} {
 		g := newRig(t, 2)
 		answered := make(chan core.Ask, 1)
 		g.c.Person.Handle("merge", func(a core.Ask) { answered <- a })
@@ -981,7 +981,12 @@ func TestPersonDoneSettlesAScriptlessAsk(t *testing.T) {
 		req.Script, req.Digest = "", ""
 		g.m.toPerson(&req, "The warden passed it to you")
 		got, _ := g.m.get(req.ID)
-		g.c.Person.Answer(got.Ask, answer, "")
+		if _, err := g.c.Person.Answer(got.Ask, answer, ""); want == "" {
+			if err == nil {
+				t.Fatalf("%s: an answer not offered was taken", answer)
+			}
+			continue
+		}
 		select {
 		case a := <-answered:
 			if a.Answer != want {
