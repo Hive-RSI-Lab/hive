@@ -31,6 +31,7 @@ const usage = `hive: a small team of AI agents working on your projects.
   hive ask "..."           ask the lead [--project name] [--wait]
   hive status              what the Hive is doing
   hive improve             run an improvement sweep now
+  hive gate ...            try a candidate Hive against the current one in child Hives (docs/gate.md)
   hive kb [words]          search the knowledge base: notes and everything the Hive did [--limit n|all]
   hive answer <id> <opt>   answer something waiting on you
   hive approve <id> [note] say yes to it (its first option)
@@ -113,6 +114,8 @@ func run(args []string) int {
 		}
 		fmt.Println(kb.Find(ws.KB(), query, limit))
 		return 0
+	case "gate":
+		return cmdGate(args)
 	case "improve":
 		return withClient(func(c *api.Client) error {
 			var s map[string]any
