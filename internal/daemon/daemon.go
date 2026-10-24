@@ -237,7 +237,10 @@ type supervision struct {
 
 var supervisor = func() supervision {
 	name, user := setup.Unit()
-	if name == "" || user && name == "hive.service" {
+	if user && name == "hive.service" {
+		return supervision{} // Run hands the restart to systemctl --user
+	}
+	if name == "" {
 		if os.Getenv("HIVE_SUPERVISED") != "" {
 			// Nothing says what its stop kills, so wait for a quiet moment.
 			return supervision{name: "its supervisor", status: RestartStatus}
